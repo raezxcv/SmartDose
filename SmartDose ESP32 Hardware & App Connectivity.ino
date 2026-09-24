@@ -2,7 +2,7 @@
 #include <Firebase_ESP_Client.h>
 #include <ESP32Servo.h> // Standard ESP32 Servo library
 
-// Provide the token generation and DNS processing utility
+// Provide token generation and DNS processing utility
 #include "addons/TokenHelper.h"
 #include "addons/RTDBHelper.h"
 
@@ -14,15 +14,17 @@
 #define API_KEY "AIzaSyDfPRQ-uUKxFcVa5M1hkkKYNWZ9e4Ef4v4"
 #define DATABASE_URL "https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/"
 
-// --- Hardware Pin Mappings ---
-const int SERVO_1_PIN          = 4;  // Servo Motor Signal (PWM)
-const int IR_SENSOR_PIN        = 13; // IR Beam-Break Pill Drop Sensor (Input Pullup, Active LOW)
-const int BUZZER_PIN           = 12; // Piezo Alarm & Chime (Active HIGH)
-const int EMERGENCY_BUTTON_PIN = 14; // Physical SOS Emergency Button (Input Pullup, Active LOW)
-const int STATUS_LED_PIN       = 2;  // Indicator LED (Active HIGH)
+// --- Hardware Pin Mappings (Aligned strictly with ESP32 Pin Mapping Table) ---
+const int SERVO_1_PIN          = 4;  // Servo 1 -> GPIO 4
+const int SERVO_2_PIN          = 13; // Servo 2 -> GPIO 13
+const int IR_SENSOR_PIN        = 34; // IR Break-Beam Sensor Signal -> GPIO 34 (Input)
+const int EMERGENCY_BUTTON_PIN = 14; // Button 3 (SOS Emergency) -> GPIO 14 (Input)
+const int BUZZER_PIN           = 12; // Piezo Alarm & Chime -> GPIO 12
+const int STATUS_LED_PIN       = 2;  // Indicator LED -> GPIO 2
 
 // Global Hardware & Firebase Objects
 Servo servo1;
+Servo servo2;
 FirebaseData fbdo;
 FirebaseData streamData;
 FirebaseAuth auth;
@@ -51,7 +53,7 @@ void streamCallback(StreamData data) {
       if (targetAngle != currentAngle && !isDispensing) {
         currentAngle = targetAngle;
         servo1.write(currentAngle);
-        Serial.printf("[Hardware] Servo moved to target angle: %d°\n", currentAngle);
+        Serial.printf("[Hardware] Servo 1 moved to target angle: %d°\n", currentAngle);
         Firebase.RTDB.setInt(&fbdo, "/hardware/servo1_status", currentAngle);
       }
     }
@@ -79,25 +81,31 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n=======================================================");
-  Serial.println("  SmartDose ESP32 Hardware & Database Controller v2.5");
+  Serial.println("  SmartDose ESP32 Controller (Pin-Mapped Version)");
   Serial.println("=======================================================");
 
-  // 1. Initialize Pins
-  pinMode(IR_SENSOR_PIN, INPUT_PULLUP);
-  pinMode(EMERGENCY_BUTTON_PIN, INPUT_PULLUP);
+  // 1. Initialize Pins (Strictly aligned with Pin Mapping Table)
+  pinMode(IR_SENSOR_PIN, INPUT); // GPIO 34 is input-only pin
+  pinMode(EMERGENCY_BUTTON_PIN, INPUT_PULLUP); // GPIO 14 (Button 3)
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
 
   digitalWrite(BUZZER_PIN, LOW);
   digitalWrite(STATUS_LED_PIN, HIGH);
 
-  // 2. Initialize ESP32 Servo with Timer Allocation
+  // 2. Initialize Servos with Timer Allocation (Servo 1 = GPIO 4, Servo 2 = GPIO 13)
   ESP32PWM::allocateTimer(0);
-  servo1.setPeriodHertz(50); // 50Hz standard servo
-  servo1.attach(SERVO_1_PIN, 500, 2400); // 500us - 2400us range
+  ESP32PWM::allocateTimer(1);
+  servo1.setPeriodHertz(50);
+  servo2.setPeriodHertz(50);
+  servo1.attach(SERVO_1_PIN, 500, 2400); // Servo 1 on GPIO 4
+  servo2.attach(SERVO_2_PIN, 500, 2400); // Servo 2 on GPIO 13
   servo1.write(0);
+  servo2.write(0);
   currentAngle = 0;
-  Serial.println("[Hardware] Servo attached to GPIO 4 (0°).");
+  Serial.println("[Hardware] Servo 1 on GPIO 4, Servo 2 on GPIO 13 initialized.");
+  Serial.println("[Hardware] IR Break-Beam Sensor on GPIO 34 initialized.");
+  Serial.println("[Hardware] Button 3 (SOS) on GPIO 14 initialized.");
 
   // 3. Connect to Wi-Fi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -142,7 +150,7 @@ void loop() {
   if (Firebase.ready()) {
     // Keep stream listener alive
     if (!Firebase.RTDB.readStream(&streamData)) {
-      // Error handles inside streamTimeoutCallback
+      // Stream error handled inside callback
     }
 
     // --- 1. Heartbeat Telemetry to `devices` collection (Every 15s) ---
@@ -161,11 +169,11 @@ void loop() {
     }
   }
 
-  // --- 2. Physical SOS Emergency Button Check ---
+  // --- 2. Physical SOS Emergency Button Check (Button 3 on GPIO 14) ---
   int reading = digitalRead(EMERGENCY_BUTTON_PIN);
   if (reading == LOW && lastButtonState == HIGH && (millis() - lastDebounceTime > 200)) {
     lastDebounceTime = millis();
-    Serial.println("[Hardware Alert] PHYSICAL SOS EMERGENCY BUTTON PRESSED!");
+    Serial.println("[Hardware Alert] PHYSICAL SOS EMERGENCY BUTTON (GPIO 14) PRESSED!");
     sendEmergencyAlert();
   }
   lastButtonState = reading;
@@ -181,27 +189,27 @@ bool executeDispenseCycle(int slot, int targetAngle) {
   // Audio-visual chime cue
   triggerAudioVisualChime();
 
-  // Rotate Carousel / Servo
+  // Rotate Servo 1
   servo1.write(targetAngle);
   currentAngle = targetAngle;
   delay(800); // Allow motor to settle
 
-  // Wait up to 10 seconds for IR Beam Drop Sensor confirmation
-  Serial.println("[Hardware] Waiting for IR beam-break pill drop confirmation...");
+  // Wait up to 10 seconds for IR Beam-Break Sensor (GPIO 34) confirmation
+  Serial.println("[Hardware] Waiting for IR break-beam sensor (GPIO 34) confirmation...");
   unsigned long startTime = millis();
   bool pillDropped = false;
 
   while (millis() - startTime < 10000) {
-    if (digitalRead(IR_SENSOR_PIN) == LOW) { // IR Beam interrupted (Pill drop detected)
+    if (digitalRead(IR_SENSOR_PIN) == LOW) { // Beam interrupted
       pillDropped = true;
-      Serial.println("[Hardware Sensor] SUCCESS! Pill drop confirmed by IR sensor.");
+      Serial.println("[Hardware Sensor] SUCCESS! Pill drop confirmed by IR sensor (GPIO 34).");
       break;
     }
     delay(10);
   }
 
   if (!pillDropped) {
-    Serial.println("[Hardware Sensor] WARNING: No pill drop detected (Dose Missed).");
+    Serial.println("[Hardware Sensor] WARNING: No pill drop detected on GPIO 34 (Dose Missed).");
   }
 
   // --- Update Database Records Across Collections ---
@@ -266,11 +274,10 @@ void sendEmergencyAlert() {
     alertJson.add("type", "emergency_button");
     alertJson.add("severity", "critical");
     alertJson.add("title", "Physical Emergency SOS Button Pressed");
-    alertJson.add("message", "Patient pressed physical SOS panic button on dispenser hardware.");
+    alertJson.add("message", "Patient pressed physical SOS panic button (GPIO 14) on dispenser hardware.");
     alertJson.add("status", "pending");
     alertJson.add("triggeredAtSec", millis() / 1000);
 
-    // Write to Realtime Database emergency alerts queue
     Firebase.RTDB.setJSON(&fbdo, "/hardware/emergency_alert", &alertJson);
     Serial.println("[Database] Urgent Emergency SOS document written to /hardware/emergency_alert!");
   }
