@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
 
 class DeviceConnectedScreen extends StatefulWidget {
   const DeviceConnectedScreen({super.key});
@@ -17,6 +19,54 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
   String? _deviceId;
   bool _loading = true;
   StreamSubscription? _deviceSubscription;
+  int _targetServoAngle = 0;
+  bool _sendingServo = false;
+
+  Future<void> _sendServoCommand(int angle) async {
+    setState(() {
+      _targetServoAngle = angle;
+      _sendingServo = true;
+    });
+
+    try {
+      if (_deviceId != null) {
+        await FirebaseFirestore.instance
+            .collection('devices')
+            .doc(_deviceId)
+            .update({
+          'servoAngle': angle,
+          'lastServoCommandAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      final url = Uri.parse(
+          'https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/servo1.json');
+      await http.put(url, body: jsonEncode(angle));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('ESP32 Servo command sent: $angle°'),
+            backgroundColor: const Color(0xFF00A36C),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to update servo: $e'),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sendingServo = false);
+    }
+  }
 
   @override
   void initState() {
@@ -352,6 +402,149 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
                         showDivider: false,
                       ),
                     ]),
+
+                    const SizedBox(height: 24),
+
+                    // ── ESP32 Servo Motor Control & Calibration ─────────────────
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text('ESP32 Servo Motor Control',
+                            style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: primaryText)),
+                        if (_sendingServo)
+                          const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Color(0xFF00A36C),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black
+                                .withValues(alpha: isDark ? 0.18 : 0.03),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 42,
+                                height: 42,
+                                decoration: BoxDecoration(
+                                  color: isDark
+                                      ? const Color(0xFF1E2D25)
+                                      : const Color(0xFFE8F8F0),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(LucideIcons.rotateCw,
+                                    color: Color(0xFF00A36C), size: 22),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text('Target Angle: ${_targetServoAngle.toInt()}°',
+                                        style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                            color: primaryText)),
+                                    const SizedBox(height: 2),
+                                    Text('Realtime Database path: /hardware/servo1',
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: secondaryText)),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          SliderTheme(
+                            data: SliderThemeData(
+                              activeTrackColor: const Color(0xFF00A36C),
+                              inactiveTrackColor: isDark
+                                  ? Colors.grey.shade800
+                                  : Colors.grey.shade200,
+                              thumbColor: const Color(0xFF00A36C),
+                              overlayColor:
+                                  const Color(0xFF00A36C).withValues(alpha: 0.2),
+                              trackHeight: 6,
+                            ),
+                            child: Slider(
+                              value: _targetServoAngle.toDouble(),
+                              min: 0,
+                              max: 180,
+                              divisions: 36,
+                              label: '${_targetServoAngle.toInt()}°',
+                              onChanged: (val) {
+                                setState(() => _targetServoAngle = val.round());
+                              },
+                              onChangeEnd: (val) {
+                                _sendServoCommand(val.round());
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [0, 45, 90, 135, 180].map((angle) {
+                              final isSelected = _targetServoAngle == angle;
+                              return OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 8),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  backgroundColor: isSelected
+                                      ? const Color(0xFF00A36C)
+                                      : Colors.transparent,
+                                  side: BorderSide(
+                                    color: isSelected
+                                        ? const Color(0xFF00A36C)
+                                        : (isDark
+                                            ? Colors.grey.shade800
+                                            : Colors.grey.shade300),
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                ),
+                                onPressed: () => _sendServoCommand(angle),
+                                child: Text(
+                                  '$angle°',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    color: isSelected
+                                        ? Colors.white
+                                        : primaryText,
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ],
+                      ),
+                    ),
 
                     const SizedBox(height: 24),
 

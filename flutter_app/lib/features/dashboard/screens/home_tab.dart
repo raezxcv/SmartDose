@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+import 'package:http/http.dart' as http;
 import 'compartment_inventory_screen.dart';
 import 'camera_feed_screen.dart';
 import 'device_connected_screen.dart';
@@ -259,31 +260,43 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
     final uid = _uid;
     if (uid == null) return;
     try {
+      final compStr = (med['compartment'] ?? 'C1').toString();
+      final slotMatch = RegExp(r'\d+').firstMatch(compStr);
+      final slotNum = slotMatch != null ? int.tryParse(slotMatch.group(0)!) ?? 1 : 1;
+
       if (_deviceId != null) {
         await FirebaseFirestore.instance
             .collection('devices')
             .doc(_deviceId)
             .update({
+          'dispenseTriggerSlot': slotNum,
           'pendingDispense': {
-            'compartment': med['compartment'] ?? 'Compartment 1',
+            'compartment': 'C$slotNum',
             'medicationName': med['medicationName'] ?? '',
             'requestedAt': FieldValue.serverTimestamp(),
             'requestedBy': uid,
           },
         });
       }
+
+      // Direct Realtime Database Hardware Trigger to ESP32
+      final url = Uri.parse(
+          'https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/dispense_trigger.json');
+      await http.put(url, body: jsonEncode(slotNum));
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Dispense signal sent for ${med['medicationName']}!'),
+            content: Text('Hardware dispense signal sent for Slot C$slotNum (${med['medicationName']})!'),
             backgroundColor: const Color(0xFF00A36C),
             behavior: SnackBarBehavior.floating,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           ),
         );
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Dispense trigger error: $e');
+    }
   }
 
   @override

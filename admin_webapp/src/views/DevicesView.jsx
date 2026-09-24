@@ -6,6 +6,7 @@ import { Smartphone, BatteryCharging, Wifi, RotateCcw, Cpu, Camera, CheckCircle2
 export function DevicesView() {
   const { devices, showToast, addActivity } = useApp();
   const [rebootingId, setRebootingId] = useState(null);
+  const [movingId, setMovingId] = useState(null);
 
   const handleRestart = (dev) => {
     setRebootingId(dev.id);
@@ -17,18 +18,36 @@ export function DevicesView() {
     }, 2000);
   };
 
+  const handleSetServo = async (dev, angle) => {
+    setMovingId(`${dev.id}_${angle}`);
+    try {
+      showToast(`Rotating ESP32 Servo on ${dev.deviceId} to ${angle}°...`);
+      await fetch('https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/servo1.json', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(angle)
+      });
+      showToast(`ESP32 Servo set to ${angle}° on ${dev.deviceId}`);
+      addActivity(`ESP32 Servo rotated to ${angle}°`, dev.patientName, dev.deviceId);
+    } catch (err) {
+      showToast(`Failed to update ESP32 Servo: ${err.message}`, 'error');
+    } finally {
+      setMovingId(null);
+    }
+  };
+
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
       <div>
         <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#111827', letterSpacing: '-0.02em', marginBottom: '4px' }}>
-          Device Fleet
+          Device Fleet & Hardware Controls
         </h1>
         <p style={{ fontSize: '13.5px', color: '#6B7280' }}>
-          Smart Pill Dispenser units, controller connectivity, camera AI modules and battery telemetry.
+          Smart Pill Dispenser units, ESP32 Servo motor calibration, live telemetry and camera vision daemons.
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '16px' }}>
         {devices.map((dev) => (
           <div
             key={dev.id}
@@ -88,6 +107,38 @@ export function DevicesView() {
                 <div style={{ padding: '8px 10px', backgroundColor: '#F9FBFA', borderRadius: '8px', fontSize: '12px' }}>
                   <span style={{ color: '#9CA3AF' }}>RPi: </span>
                   <strong style={{ color: dev.rpiStatus === 'online' ? '#059669' : '#D97706' }}>{dev.rpiStatus}</strong>
+                </div>
+              </div>
+
+              {/* ESP32 Servo Motor Controller Panel */}
+              <div style={{ marginTop: '16px', padding: '12px', backgroundColor: '#F8FAF9', borderRadius: '12px', border: '1px solid #E2E8F0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: '700', color: '#1E293B', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <Cpu size={14} color="#059669" /> ESP32 Servo Angle Control
+                  </span>
+                  <span style={{ fontSize: '11px', color: '#64748B', fontFamily: 'monospace' }}>/hardware/servo1</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
+                  {[0, 45, 90, 135, 180].map((angle) => (
+                    <button
+                      key={angle}
+                      onClick={() => handleSetServo(dev, angle)}
+                      disabled={movingId === `${dev.id}_${angle}`}
+                      style={{
+                        padding: '6px 2px',
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        borderRadius: '6px',
+                        border: '1px solid #CBD5E1',
+                        backgroundColor: movingId === `${dev.id}_${angle}` ? '#059669' : '#FFFFFF',
+                        color: movingId === `${dev.id}_${angle}` ? '#FFFFFF' : '#334155',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease'
+                      }}
+                    >
+                      {angle}°
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
