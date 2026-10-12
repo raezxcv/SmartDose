@@ -7,6 +7,7 @@ import 'core/theme/app_theme.dart';
 import 'core/theme/theme_provider.dart';
 import 'features/auth/screens/splash_screen.dart';
 import 'features/auth/screens/auth_screen.dart';
+import 'features/auth/screens/signup_step1_screen.dart';
 import 'features/auth/screens/signup_step2_screen.dart';
 import 'features/auth/screens/signup_step3_screen.dart';
 import 'features/auth/providers/auth_service.dart';
@@ -195,7 +196,7 @@ class _SignupFlowState extends State<_SignupFlow>
   Widget? _previousPage;
 
   // Signup draft
-  final String _role = 'user';
+  String _role = 'patient';
   String _name = '';
   String _phone = '';
   String? _dob;
@@ -274,21 +275,30 @@ class _SignupFlowState extends State<_SignupFlow>
 
   // ── Step callbacks ─────────────────────────────────────────────────────────
 
-  void _onStep1Done(
+  void _onStep1Done(String role) {
+    _role = role;
+    _currentStep = 2;
+    _animateToPage(_buildStep2(), forward: true);
+  }
+
+  void _onStep2Done(
       String name, String phone, String? dob, String? gender, String? address) {
     _name = name;
     _phone = phone;
     _dob = dob;
     _gender = gender;
     _address = address;
-    _currentStep = 2;
-    _animateToPage(_buildStep2(), forward: true);
+    _currentStep = 3;
+    _animateToPage(_buildStep3(), forward: true);
   }
 
   void _handleBack() {
     if (_isAnimating || _isCreating) return;
-    if (_currentStep > 1) {
-      _currentStep--;
+    if (_currentStep == 3) {
+      _currentStep = 2;
+      _animateToPage(_buildStep2(), forward: false);
+    } else if (_currentStep == 2) {
+      _currentStep = 1;
       _animateToPage(_buildStep1(), forward: false);
     } else {
       if (widget.onGoToLogin != null) {
@@ -311,7 +321,7 @@ class _SignupFlowState extends State<_SignupFlow>
     setState(() {
       _isCreating = false;
       _isStepLoading = false;
-      _currentStep = 3;
+      _currentStep = 4;
     });
     _animateToPage(_buildSuccessScreen(role, name), forward: true);
   }
@@ -327,20 +337,28 @@ class _SignupFlowState extends State<_SignupFlow>
 
   // ── Page builders ──────────────────────────────────────────────────────────
 
-  Widget _buildStep1() => SignupStep2Screen(
+  Widget _buildStep1() => SignupStep1Screen(
         key: const ValueKey('step1'),
+        initialRole: _role,
+        onBack: _handleBack,
+        onNext: _onStep1Done,
+        onRegisterSubmit: _registerSubmit,
+      );
+
+  Widget _buildStep2() => SignupStep2Screen(
+        key: const ValueKey('step2'),
         initialName: _name,
         initialPhone: _phone,
         initialDob: _dob,
         initialGender: _gender,
         initialAddress: _address,
         onBack: _handleBack,
-        onNext: _onStep1Done,
+        onNext: _onStep2Done,
         onRegisterSubmit: _registerSubmit,
       );
 
-  Widget _buildStep2() => SignupStep3Screen(
-        key: const ValueKey('step2'),
+  Widget _buildStep3() => SignupStep3Screen(
+        key: const ValueKey('step3'),
         role: _role,
         name: _name,
         phone: _phone,
@@ -375,7 +393,7 @@ class _SignupFlowState extends State<_SignupFlow>
   Widget build(BuildContext context) {
     final bool showSteps = _currentStep <= 3;
     final int step = _currentStep.clamp(1, 3);
-    final bool isLastStep = _currentStep == 2;
+    final bool isLastStep = _currentStep == 3;
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
@@ -576,7 +594,7 @@ class _SignupFlowState extends State<_SignupFlow>
                               ),
 
                               // ── Fixed Bottom Action Bar ──────────────────
-                              if (_currentStep <= 2)
+                              if (_currentStep <= 3)
                                 Container(
                                   padding: const EdgeInsets.fromLTRB(24, 12, 24, 14),
                                   decoration: BoxDecoration(

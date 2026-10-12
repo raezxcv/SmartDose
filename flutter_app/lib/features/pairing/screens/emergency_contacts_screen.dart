@@ -4,7 +4,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class EmergencyContactsScreen extends StatefulWidget {
-  const EmergencyContactsScreen({super.key});
+  final bool isCaregiver;
+  const EmergencyContactsScreen({super.key, this.isCaregiver = false});
 
   @override
   State<EmergencyContactsScreen> createState() =>
@@ -526,17 +527,18 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
                     color: primaryTextColor,
                   ),
                 ),
-                GestureDetector(
-                  onTap: () => _showAddContactDialog(),
-                  child: const Text(
-                    '+ Add New',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: emerald,
+                if (widget.isCaregiver)
+                  GestureDetector(
+                    onTap: () => _showAddContactDialog(),
+                    child: const Text(
+                      '+ Add New',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: emerald,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
             const SizedBox(height: 14),
@@ -616,42 +618,52 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
                           ),
                         ),
                         const SizedBox(height: 20),
-                        GestureDetector(
-                          onTap: () => _showAddContactDialog(),
-                          child: Container(
-                            width: double.infinity,
-                            height: 50,
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(
-                                colors: [Color(0xFF00A36C), Color(0xFF00C882)],
-                              ),
-                              borderRadius: BorderRadius.circular(25),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: emerald.withValues(alpha: 0.35),
-                                  blurRadius: 12,
-                                  offset: const Offset(0, 4),
+                        if (widget.isCaregiver)
+                          GestureDetector(
+                            onTap: () => _showAddContactDialog(),
+                            child: Container(
+                              width: double.infinity,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                gradient: const LinearGradient(
+                                  colors: [Color(0xFF00A36C), Color(0xFF00C882)],
                                 ),
-                              ],
-                            ),
-                            child: const Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.add_rounded,
-                                    color: Colors.white, size: 22),
-                                SizedBox(width: 8),
-                                Text(
-                                  'Add Emergency Contact',
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
+                                borderRadius: BorderRadius.circular(25),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: emerald.withValues(alpha: 0.35),
+                                    blurRadius: 12,
+                                    offset: const Offset(0, 4),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.add_rounded,
+                                      color: Colors.white, size: 22),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Add Emergency Contact',
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        else
+                          Text(
+                            'Emergency contacts are managed by your caregiver.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: secondaryTextColor,
+                              fontStyle: FontStyle.italic,
                             ),
                           ),
-                        ),
                       ],
                     ),
                   );
@@ -760,43 +772,43 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
                               tooltip: 'Send Test SMS',
                               onPressed: () => _sendTestSms({...data, 'id': id}),
                             ),
-                            // Edit / delete menu
-                            PopupMenuButton<String>(
-                              icon: Icon(Icons.more_vert_rounded,
-                                  color: secondaryTextColor, size: 20),
-                              onSelected: (val) {
-                                if (val == 'edit') {
-                                  _showAddContactDialog(
-                                      existingContact: {...data, 'id': id});
-                                } else if (val == 'delete') {
-                                  _deleteContact(id);
-                                }
-                              },
-                              itemBuilder: (ctx) => [
-                                const PopupMenuItem(
-                                  value: 'edit',
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.edit_outlined, size: 18),
-                                      SizedBox(width: 10),
-                                      Text('Edit Contact'),
-                                    ],
+                            if (widget.isCaregiver)
+                              PopupMenuButton<String>(
+                                icon: Icon(Icons.more_vert_rounded,
+                                    color: secondaryTextColor, size: 20),
+                                onSelected: (val) {
+                                  if (val == 'edit') {
+                                    _showAddContactDialog(
+                                        existingContact: {...data, 'id': id});
+                                  } else if (val == 'delete') {
+                                    _deleteContact(id);
+                                  }
+                                },
+                                itemBuilder: (ctx) => [
+                                  const PopupMenuItem(
+                                    value: 'edit',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.edit_outlined, size: 18),
+                                        SizedBox(width: 10),
+                                        Text('Edit Contact'),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                                const PopupMenuItem(
-                                  value: 'delete',
-                                  child: Row(
-                                    children: [
-                                      Icon(Icons.delete_outline_rounded,
-                                          size: 18, color: Colors.red),
-                                      SizedBox(width: 10),
-                                      Text('Remove Contact',
-                                          style: TextStyle(color: Colors.red)),
-                                    ],
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.delete_outline_rounded,
+                                            size: 18, color: Colors.red),
+                                        SizedBox(width: 10),
+                                        Text('Remove Contact',
+                                            style: TextStyle(color: Colors.red)),
+                                      ],
+                                    ),
                                   ),
-                                ),
-                              ],
-                            ),
+                                ],
+                              ),
                           ],
                         ),
                       );

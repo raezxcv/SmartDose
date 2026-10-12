@@ -221,10 +221,11 @@ class _CaregiverHomeScreenState extends State<CaregiverHomeScreen> {
                 onGoToAlerts: () => _switchTab(3),
                 onGoToProfile: () => _switchTab(4),
                 unreadCount: _unreadAlertsCount,
+                isCaregiver: true,
               ),
 
-              // ── Tab 1: Medications — identical to patient
-              const PatientMedsTab(),
+              // ── Tab 1: Medications — caregiver has full add/edit/delete access
+              const PatientMedsTab(isCaregiver: true),
 
               // ── Tab 2: History — identical to patient
               const PatientHistoryTab(),

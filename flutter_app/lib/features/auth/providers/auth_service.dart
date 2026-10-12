@@ -71,7 +71,7 @@ class AuthService {
     required String email,
     required String password,
     required String name,
-    String role = 'user',
+    String role = 'patient',
     String? phone,
     String? dateOfBirth,
     String? gender,
@@ -326,10 +326,13 @@ class AuthService {
           await _firestore.collection('users').doc(uid).get();
       if (doc.exists && doc.data() != null) {
         final data = doc.data() as Map<String, dynamic>;
-        return data['role'] ?? 'user';
+        final role = data['role'] as String?;
+        if (role != null && role.isNotEmpty) {
+          return role == 'caregiver' ? 'caregiver' : 'patient';
+        }
       }
     } catch (_) {}
-    return 'user';
+    return 'patient';
   }
 
   /// Fetch user profile data from Firestore.

@@ -14,6 +14,8 @@ import 'device_connected_screen.dart';
 import 'camera_feed_screen.dart';
 import 'compartment_inventory_screen.dart';
 import '../../pairing/screens/emergency_contacts_screen.dart';
+import '../../pairing/screens/pair_caregiver_screen.dart';
+import '../../pairing/screens/connect_patient_screen.dart';
 import '../../../shared/widgets/smartdose_loading.dart';
 
 class PatientProfileTab extends ConsumerStatefulWidget {
@@ -920,6 +922,26 @@ class _PatientProfileTabState extends ConsumerState<PatientProfileTab> {
                               color: secondaryTextColor,
                             ),
                           ),
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: (userData?['role'] == 'caregiver')
+                                  ? const Color(0xFF3B82F6).withValues(alpha: 0.12)
+                                  : const Color(0xFF00A36C).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              (userData?['role'] == 'caregiver') ? 'Caregiver / Family' : 'Patient',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: (userData?['role'] == 'caregiver')
+                                    ? const Color(0xFF2563EB)
+                                    : const Color(0xFF00A36C),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -967,7 +989,16 @@ class _PatientProfileTabState extends ConsumerState<PatientProfileTab> {
                       icon: LucideIcons.mail,
                       title: 'Email Address',
                       subtitle: email.isNotEmpty ? email : 'Not set',
+                      showDivider: true,
+                    ),
+                    _buildNavTile(
+                      icon: LucideIcons.userCheck,
+                      title: 'Account Role',
+                      subtitle: (userData?['role'] == 'caregiver')
+                          ? 'Caregiver / Family (Full Management)'
+                          : 'Patient (View-only schedule)',
                       showDivider: false,
+                      onTap: () => _showSwitchRoleDialog(userData?['role'] ?? 'patient'),
                     ),
                   ],
                 ),
@@ -1065,12 +1096,34 @@ class _PatientProfileTabState extends ConsumerState<PatientProfileTab> {
                       icon: LucideIcons.usersRound,
                       title: 'Emergency Contacts',
                       subtitle: 'Phone numbers for SIM800L SMS alerts',
-                      showDivider: false,
+                      showDivider: true,
                       onTap: () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                              builder: (_) => const EmergencyContactsScreen())),
+                              builder: (_) => EmergencyContactsScreen(isCaregiver: userData?['role'] == 'caregiver'))),
                     ),
+                    if (userData?['role'] == 'caregiver')
+                      _buildNavTile(
+                        icon: LucideIcons.userPlus,
+                        title: 'Link a Patient',
+                        subtitle: 'Enter pairing code or scan patient QR code',
+                        showDivider: false,
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const ConnectPatientScreen())),
+                      )
+                    else
+                      _buildNavTile(
+                        icon: LucideIcons.qrCode,
+                        title: 'Link a Caregiver',
+                        subtitle: 'Generate pairing code or QR code',
+                        showDivider: false,
+                        onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const PairCaregiverScreen())),
+                      ),
                   ],
                 ),
               ),
@@ -1128,7 +1181,7 @@ class _PatientProfileTabState extends ConsumerState<PatientProfileTab> {
                           context,
                           MaterialPageRoute(
                               builder: (_) =>
-                                  const CompartmentInventoryScreen())),
+                                  CompartmentInventoryScreen(isCaregiver: userData?['role'] == 'caregiver'))),
                     ),
                   ],
                 ),
@@ -1203,6 +1256,104 @@ class _PatientProfileTabState extends ConsumerState<PatientProfileTab> {
           ),
         );
       },
+    );
+  }
+
+  void _showSwitchRoleDialog(String currentRole) {
+    final targetRole = (currentRole == 'caregiver') ? 'patient' : 'caregiver';
+    final targetLabel = (targetRole == 'caregiver') ? 'Caregiver / Family' : 'Patient';
+    final theme = Theme.of(context);
+    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final primaryTextColor = theme.colorScheme.onSurface;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+        backgroundColor: cardBgColor,
+        contentPadding: const EdgeInsets.all(24),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                color: const Color(0xFF00A36C).withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(LucideIcons.refreshCw, color: Color(0xFF00A36C), size: 28),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'Switch to $targetLabel?',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: primaryTextColor,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Switching will change your account permissions between Patient (View-only schedule) and Caregiver (Full management).',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.4,
+                color: primaryTextColor.withValues(alpha: 0.65),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
+                    child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () async {
+                      final uid = _uid;
+                      if (uid != null) {
+                        await FirebaseFirestore.instance.collection('users').doc(uid).set({
+                          'role': targetRole,
+                          'updatedAt': FieldValue.serverTimestamp(),
+                        }, SetOptions(merge: true));
+                      }
+                      if (ctx.mounted) Navigator.pop(ctx);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Switched to $targetLabel! Logging out to apply...'),
+                            backgroundColor: const Color(0xFF00A36C),
+                          ),
+                        );
+                        Future.delayed(const Duration(milliseconds: 600), () {
+                          widget.onSignOut();
+                        });
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00A36C),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
+                    child: const Text('Switch Role', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 

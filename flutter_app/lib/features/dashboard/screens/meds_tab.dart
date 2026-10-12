@@ -8,7 +8,8 @@ import 'alerts_tab.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class PatientMedsTab extends StatefulWidget {
-  const PatientMedsTab({super.key});
+  final bool isCaregiver;
+  const PatientMedsTab({super.key, this.isCaregiver = false});
 
   @override
   State<PatientMedsTab> createState() => _PatientMedsTabState();
@@ -448,6 +449,136 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     }
   }
 
+  void _showReadOnlyMedicationDetails(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? {};
+    final name = data['medicationName'] ?? 'Medication';
+    final dosage = data['dosage'] ?? '';
+    final comp = data['compartment'] ?? 'Compartment 1';
+    final freq = data['frequency'] ?? 'Daily';
+    final ts = data['scheduledTime'] as Timestamp?;
+    final date = ts?.toDate();
+    final timeStr = date != null ? DateFormat('hh:mm a').format(date) : '--:--';
+    final cardBgColor = Theme.of(context).colorScheme.surface;
+    final primaryTextColor = Theme.of(context).colorScheme.onSurface;
+    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 32),
+        decoration: BoxDecoration(
+          color: cardBgColor,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: primaryTextColor.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00A36C).withValues(alpha: 0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(LucideIcons.pill, color: Color(0xFF00A36C), size: 24),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(name, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryTextColor)),
+                      const SizedBox(height: 2),
+                      Text(dosage, style: TextStyle(fontSize: 14, color: secondaryTextColor, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00A36C).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(comp, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF00A36C))),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0xFF1E1E22)
+                    : const Color(0xFFF9FAFB),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? const Color(0xFF27272A)
+                      : const Color(0xFFE5E7EB),
+                ),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Scheduled Time', style: TextStyle(color: secondaryTextColor, fontSize: 13, fontWeight: FontWeight.w500)),
+                      Text(timeStr, style: TextStyle(color: primaryTextColor, fontSize: 14, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const Divider(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Frequency', style: TextStyle(color: secondaryTextColor, fontSize: 13, fontWeight: FontWeight.w500)),
+                      Text(freq, style: TextStyle(color: primaryTextColor, fontSize: 14, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const Divider(height: 20),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Permissions', style: TextStyle(color: secondaryTextColor, fontSize: 13, fontWeight: FontWeight.w500)),
+                      const Text('Managed by Caregiver (View-only)', style: TextStyle(color: Color(0xFF00A36C), fontSize: 13, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: OutlinedButton(
+                onPressed: () => Navigator.pop(ctx),
+                style: OutlinedButton.styleFrom(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                  side: const BorderSide(color: Color(0xFF00A36C), width: 1.5),
+                ),
+                child: const Text('Close', style: TextStyle(color: Color(0xFF00A36C), fontWeight: FontWeight.bold, fontSize: 15)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -512,11 +643,12 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
           ),
         ),
 
-        // Floating Action Button
-        Positioned(
-          bottom: 20,
-          left: 0,
-          right: 0,
+        // Floating Action Button (Caregiver only)
+        if (widget.isCaregiver)
+          Positioned(
+            bottom: 20,
+            left: 0,
+            right: 0,
           child: Center(
             child: GestureDetector(
               onTap: () => _showMedicationSheet(),
@@ -703,7 +835,9 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Tap "Add medication" below to schedule a dose for this day.',
+                  widget.isCaregiver
+                      ? 'Tap "Add medication" below to schedule a dose for this day.'
+                      : 'Your caregiver configures and manages your medication schedules.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: secondaryTextColor),
                 ),
@@ -799,7 +933,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
 
     return Dismissible(
       key: Key(doc.id),
-      direction: DismissDirection.endToStart,
+      direction: widget.isCaregiver ? DismissDirection.endToStart : DismissDirection.none,
       background: Container(
         margin: const EdgeInsets.only(bottom: 14),
         alignment: Alignment.centerRight,
@@ -811,6 +945,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
         child: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 28),
       ),
       confirmDismiss: (_) async {
+        if (!widget.isCaregiver) return false;
         return await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
@@ -828,7 +963,9 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
       },
       onDismissed: (_) => _deleteSchedule(doc),
       child: GestureDetector(
-        onTap: () => _showMedicationSheet(editDoc: doc),
+        onTap: () => widget.isCaregiver
+            ? _showMedicationSheet(editDoc: doc)
+            : _showReadOnlyMedicationDetails(doc),
         child: Container(
           margin: const EdgeInsets.only(bottom: 14),
           padding: const EdgeInsets.all(18),
@@ -902,29 +1039,30 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                   ],
                 ),
               ),
-              IconButton(
-                icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 22),
-                tooltip: 'Delete Medication',
-                onPressed: () async {
-                  final confirm = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Delete Medication?'),
-                      content: Text('Are you sure you want to delete $name?'),
-                      actions: [
-                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx, true),
-                          child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (confirm == true) {
-                    _deleteSchedule(doc);
-                  }
-                },
-              ),
+              if (widget.isCaregiver)
+                IconButton(
+                  icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 22),
+                  tooltip: 'Delete Medication',
+                  onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Delete Medication?'),
+                        content: Text('Are you sure you want to delete $name?'),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+                          TextButton(
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (confirm == true) {
+                      _deleteSchedule(doc);
+                    }
+                  },
+                ),
               Icon(Icons.chevron_right_rounded, color: secondaryTextColor, size: 20),
             ],
           ),

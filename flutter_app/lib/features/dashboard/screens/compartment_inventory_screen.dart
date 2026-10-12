@@ -6,7 +6,8 @@ import 'alerts_tab.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class CompartmentInventoryScreen extends StatelessWidget {
-  const CompartmentInventoryScreen({super.key});
+  final bool isCaregiver;
+  const CompartmentInventoryScreen({super.key, this.isCaregiver = false});
 
   Stream<QuerySnapshot<Map<String, dynamic>>> get _compartmentsStream {
     return FirebaseFirestore.instance
@@ -226,7 +227,7 @@ class CompartmentInventoryScreen extends StatelessWidget {
               }
 
               return GestureDetector(
-                onTap: () => _showUpdateMedNameSheet(context, doc),
+                onTap: isCaregiver ? () => _showUpdateMedNameSheet(context, doc) : null,
                 child: Container(
                   margin: const EdgeInsets.only(bottom: 14),
                   padding: const EdgeInsets.all(18),
@@ -300,25 +301,27 @@ class CompartmentInventoryScreen extends StatelessWidget {
                         Text('Last refilled: $refilledStr',
                             style: const TextStyle(fontSize: 11, color: Color(0xFF9CA3AF))),
                       ],
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton.icon(
-                            style: TextButton.styleFrom(foregroundColor: const Color(0xFF6B7280)),
-                            onPressed: () => _showUpdateMedNameSheet(context, doc),
-                            icon: const Icon(Icons.edit_outlined, size: 16),
-                            label: const Text('Edit', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                          const SizedBox(width: 8),
-                          TextButton.icon(
-                            style: TextButton.styleFrom(foregroundColor: const Color(0xFF00A36C)),
-                            onPressed: () => _refillCompartment(context, doc),
-                            icon: const Icon(Icons.refresh_rounded, size: 16),
-                            label: const Text('Refill', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                        ],
-                      ),
+                      if (isCaregiver) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            TextButton.icon(
+                              style: TextButton.styleFrom(foregroundColor: const Color(0xFF6B7280)),
+                              onPressed: () => _showUpdateMedNameSheet(context, doc),
+                              icon: const Icon(Icons.edit_outlined, size: 16),
+                              label: const Text('Edit', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton.icon(
+                              style: TextButton.styleFrom(foregroundColor: const Color(0xFF00A36C)),
+                              onPressed: () => _refillCompartment(context, doc),
+                              icon: const Icon(Icons.refresh_rounded, size: 16),
+                              label: const Text('Refill', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),

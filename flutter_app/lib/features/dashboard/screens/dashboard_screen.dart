@@ -209,8 +209,9 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
                 ),
                 onGoToProfile: () => _switchTab(3),
                 unreadCount: _unreadAlertsCount,
+                isCaregiver: false,
               ),
-              const PatientMedsTab(),
+              const PatientMedsTab(isCaregiver: false),
               const PatientHistoryTab(),
               PatientProfileTab(
                 fallbackName: _displayName,

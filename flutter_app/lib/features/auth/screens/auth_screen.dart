@@ -86,7 +86,10 @@ class _AuthScreenState extends State<AuthScreen>
         password: _passwordController.text.trim(),
       );
       if (userData != null) {
-        widget.onLoginSuccess(userData['role'] ?? 'patient', userData['name'] ?? 'User');
+        // Read role from the stored Firestore profile — never overwrite it at login.
+        final role = (userData['role'] as String?)?.trim().toLowerCase() ?? 'patient';
+        final name = (userData['name'] as String?) ?? 'User';
+        widget.onLoginSuccess(role, name);
       } else {
         setState(() => _errorMessage = 'User record not found.');
       }
@@ -464,8 +467,7 @@ class _AuthScreenState extends State<AuthScreen>
                                         ),
                                       ),
 
-                                      // Spacing (44px) between Welcome Back subtitle block and Email field
-                                      const SizedBox(height: 44),
+                                      const SizedBox(height: 20),
 
                                       // Error Banner if present
                                       if (_errorMessage != null) ...[

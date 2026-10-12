@@ -21,6 +21,7 @@ class PatientHomeTab extends StatefulWidget {
   final VoidCallback onGoToAlerts;
   final VoidCallback onGoToProfile;
   final int unreadCount;
+  final bool isCaregiver;
 
   const PatientHomeTab({
     super.key,
@@ -31,6 +32,7 @@ class PatientHomeTab extends StatefulWidget {
     required this.onGoToAlerts,
     required this.onGoToProfile,
     required this.unreadCount,
+    this.isCaregiver = false,
   });
 
   @override
@@ -853,15 +855,20 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(25),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.add_circle_rounded,
-                        color: Color(0xFF00A36C), size: 20),
-                    SizedBox(width: 8),
+                    Icon(
+                      widget.isCaregiver
+                          ? Icons.add_circle_rounded
+                          : Icons.calendar_month_rounded,
+                      color: const Color(0xFF00A36C),
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
                     Text(
-                      'Add Medication',
-                      style: TextStyle(
+                      widget.isCaregiver ? 'Add Medication' : 'View Schedule',
+                      style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
                         color: Color(0xFF00A36C),
@@ -1055,7 +1062,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
         'cb': () => Navigator.push(
             context,
             MaterialPageRoute(
-                builder: (_) => const CompartmentInventoryScreen())),
+                builder: (_) => CompartmentInventoryScreen(isCaregiver: widget.isCaregiver))),
       },
       {
         'icon': Icons.wifi_rounded,
