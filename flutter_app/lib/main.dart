@@ -12,6 +12,7 @@ import 'features/auth/screens/signup_step3_screen.dart';
 import 'features/auth/providers/auth_service.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'features/dashboard/screens/dashboard_screen.dart';
+import 'features/dashboard/screens/caregiver_dashboard_screen.dart';
 import 'shared/widgets/smartdose_loading.dart';
 
 void main() async {
@@ -83,7 +84,9 @@ class _RootNavigatorState extends State<_RootNavigator> {
   // ── Routing helpers ───────────────────────────────────────────────────────
 
   void _pushDashboard(String role, String name) {
-    final Widget dashboard = PatientHomeScreen(userName: name, onSignOut: _signOut);
+    final Widget dashboard = (role == 'caregiver')
+        ? CaregiverHomeScreen(userName: name, onSignOut: _signOut)
+        : PatientHomeScreen(userName: name, onSignOut: _signOut);
     _nav.pushAndRemoveUntil(_fadeRoute(dashboard), (_) => false);
   }
 
@@ -99,7 +102,8 @@ class _RootNavigatorState extends State<_RootNavigator> {
       try {
         final profile = await _auth.getUserProfile(currentUser.uid);
         final name = profile?['name'] ?? currentUser.displayName ?? 'User';
-        _pushDashboard('user', name);
+        final role = profile?['role'] ?? 'patient';
+        _pushDashboard(role, name);
         return;
       } catch (e) {
         debugPrint('Error checking auth session: $e');
@@ -161,20 +165,10 @@ class _RootNavigatorState extends State<_RootNavigator> {
 class _SignupFlow extends StatefulWidget {
   final void Function(String role, String name) onSuccess;
   final VoidCallback? onGoToLogin;
-  final String initialName;
-  final String initialEmail;
-  final String? googleUid;
-  final String? profilePhotoUrl;
-  final String authProvider;
 
   const _SignupFlow({
     required this.onSuccess,
     this.onGoToLogin,
-    this.initialName = '',
-    this.initialEmail = '',
-    this.googleUid,
-    this.profilePhotoUrl,
-    this.authProvider = 'google',
   });
 
   @override
@@ -201,21 +195,19 @@ class _SignupFlowState extends State<_SignupFlow>
   Widget? _previousPage;
 
   // Signup draft
-  String _role = 'user';
-  late String _name;
+  final String _role = 'user';
+  String _name = '';
   String _phone = '';
   String? _dob;
   String? _gender;
   String? _address;
-  late String _email;
+  String _email = '';
   String _password = '';
   String _confirmPassword = '';
 
   @override
   void initState() {
     super.initState();
-    _name = widget.initialName;
-    _email = widget.initialEmail;
 
     _slideCtrl = AnimationController(
       vsync: this,
@@ -363,8 +355,8 @@ class _SignupFlowState extends State<_SignupFlow>
           _password = password;
           _confirmPassword = confirmPassword;
         },
-        googleUid: widget.googleUid,
-        profilePhotoUrl: widget.profilePhotoUrl,
+        googleUid: null,
+        profilePhotoUrl: null,
         onBack: _handleBack,
         onSignupSuccess: _onSignupSuccess,
         onCreatingChanged: _onCreatingChanged,
