@@ -7,9 +7,16 @@ import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class CompartmentInventoryScreen extends StatelessWidget {
   final bool isCaregiver;
-  const CompartmentInventoryScreen({super.key, this.isCaregiver = false});
+  final String? patientUid;
+  const CompartmentInventoryScreen({super.key, this.isCaregiver = false, this.patientUid});
 
   Stream<QuerySnapshot<Map<String, dynamic>>> get _compartmentsStream {
+    if (patientUid != null && patientUid!.isNotEmpty) {
+      return FirebaseFirestore.instance
+          .collection('compartments')
+          .where('patientUid', isEqualTo: patientUid)
+          .snapshots();
+    }
     return FirebaseFirestore.instance
         .collection('compartments')
         .snapshots();

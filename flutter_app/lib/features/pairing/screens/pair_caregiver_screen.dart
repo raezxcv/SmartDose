@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../services/pairing_service.dart';
 import 'connection_requests_screen.dart';
+import 'connect_patient_screen.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class PairCaregiverScreen extends StatefulWidget {
@@ -695,12 +696,10 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
               // Scan QR button (indigo/violet gradient for caregiver)
               GestureDetector(
                 onTap: () {
-                  // TODO: implement QR scanner
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text(
-                          'QR scanner coming soon — use pairing code for now'),
-                      backgroundColor: Color(0xFF6366F1),
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const ConnectPatientScreen(),
                     ),
                   );
                 },

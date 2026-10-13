@@ -5,7 +5,8 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 class EmergencyContactsScreen extends StatefulWidget {
   final bool isCaregiver;
-  const EmergencyContactsScreen({super.key, this.isCaregiver = false});
+  final String? patientUid;
+  const EmergencyContactsScreen({super.key, this.isCaregiver = false, this.patientUid});
 
   @override
   State<EmergencyContactsScreen> createState() =>
@@ -13,12 +14,12 @@ class EmergencyContactsScreen extends StatefulWidget {
 }
 
 class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
-  final _uid = FirebaseAuth.instance.currentUser?.uid;
+  String? get _targetUid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
   final _userName =
       FirebaseAuth.instance.currentUser?.displayName ?? 'Patient';
 
   Future<void> _showAddContactDialog({Map<String, dynamic>? existingContact}) async {
-    final uid = _uid;
+    final uid = _targetUid;
     if (uid == null) return;
 
     final nameCtrl =
@@ -311,7 +312,7 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
   }
 
   Future<void> _sendTestSms(Map<String, dynamic> contact) async {
-    final uid = _uid;
+    final uid = _targetUid;
     if (uid == null) return;
 
     final phone = contact['phone'] as String? ?? '';
@@ -559,14 +560,13 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
                 }
 
                 final allDocs = snapshot.data?.docs ?? [];
-                final matchingDocs = allDocs.where((doc) {
+                final targetUid = _targetUid;
+                final docs = allDocs.where((doc) {
                   final data = doc.data();
                   final pUid = (data['patientUid'] ?? data['patientId'] ?? '').toString();
-                  if (_uid == null || pUid.isEmpty) return true;
-                  return pUid == _uid || (data['patientName'] != null && data['patientName'] == _userName);
+                  if (targetUid == null) return false;
+                  return pUid == targetUid;
                 }).toList();
-
-                final docs = matchingDocs.isNotEmpty ? matchingDocs : allDocs;
 
                 if (docs.isEmpty) {
                   return Container(

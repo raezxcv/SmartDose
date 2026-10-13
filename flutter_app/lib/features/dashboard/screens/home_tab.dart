@@ -22,6 +22,7 @@ class PatientHomeTab extends StatefulWidget {
   final VoidCallback onGoToProfile;
   final int unreadCount;
   final bool isCaregiver;
+  final String? patientUid;
 
   const PatientHomeTab({
     super.key,
@@ -33,6 +34,7 @@ class PatientHomeTab extends StatefulWidget {
     required this.onGoToProfile,
     required this.unreadCount,
     this.isCaregiver = false,
+    this.patientUid,
   });
 
   @override
@@ -43,6 +45,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
   Timer? _countdownTimer;
   Map<String, dynamic>? _nextMed;
   bool _dispatchingEmergency = false;
+  bool _isDispensing = false;
   StreamSubscription? _deviceSub;
   String? _deviceId;
 
@@ -51,7 +54,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
   Stream<QuerySnapshot<Map<String, dynamic>>>? _compartmentsStream;
   Stream<DocumentSnapshot<Map<String, dynamic>>>? _userDocStream;
 
-  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  String? get _uid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
 
   @override
   void initState() {
@@ -59,6 +62,15 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
     _initStreams();
     _startCountdown();
     _initDeviceStream();
+  }
+
+  @override
+  void didUpdateWidget(PatientHomeTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.patientUid != widget.patientUid) {
+      _initStreams();
+      _initDeviceStream();
+    }
   }
 
   @override
@@ -132,6 +144,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
   Future<void> _onEmergencyDispense() async {
     final uid = _uid;
     if (uid == null) return;
+    if (_dispatchingEmergency) return;
 
     final theme = Theme.of(context);
     final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
@@ -217,6 +230,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
               .collection('devices')
               .doc(_deviceId)
               .update({
+            'status': 'dispensing',
             'emergencyDispense': true,
             'emergencyRequestedAt': FieldValue.serverTimestamp(),
             'emergencyRequestedBy': uid,
@@ -226,10 +240,19 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
         }
       }
 
+      // Direct Realtime Database Hardware Trigger to ESP32 for emergency slot (slot 1 or designated)
+      try {
+        final url = Uri.parse(
+            'https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/emergency_trigger.json');
+        await http.put(url, body: jsonEncode(true));
+      } catch (e) {
+        debugPrint('RTDB emergency trigger warning: $e');
+      }
+
       // Queue SMS alerts to all contacts for SIM800L module
       await _dispatchSmsAlertsToContacts(
         message:
-            'EMERGENCY ALERT: Emergency dispense triggered by ${widget.displayName}. — SmartDose SIM800L',
+            'EMERGENCY ALERT: Immediate emergency dispense triggered for ${widget.displayName}. — SmartDose SIM800L',
         triggeredBy: 'emergency',
       );
 
@@ -238,7 +261,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
         'patientId': uid,
         'patientUid': uid,
         'initiatedBy': 'patient',
-        'status': 'pending',
+        'status': 'dispensed',
         'requestedAt': FieldValue.serverTimestamp(),
       });
 
@@ -246,9 +269,10 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
       await FirebaseFirestore.instance.collection('dispensingLogs').add({
         'patientUid': uid,
         'patientId': uid,
-        'medicationName': 'Emergency Request',
+        'deviceId': _deviceId ?? '',
+        'medicationName': 'Emergency Dose',
         'type': 'emergency',
-        'status': 'requested',
+        'status': 'dispensed',
         'timestamp': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
       });
@@ -260,14 +284,27 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
             .doc(uid)
             .collection('items')
             .add({
-          'title': 'Emergency dispense requested',
-          'body': 'An emergency dispense request was sent to the device.',
+          'title': 'Emergency dose dispensed',
+          'body': 'Emergency dispensing cycle executed. Contacts have been notified via SMS.',
           'type': 'emergency',
           'isRead': false,
           'createdAt': FieldValue.serverTimestamp(),
         });
       } catch (e) {
         debugPrint('Notification add warning: $e');
+      }
+
+      // Reset device state back to ready
+      if (_deviceId != null) {
+        try {
+          await FirebaseFirestore.instance
+              .collection('devices')
+              .doc(_deviceId)
+              .update({
+            'status': 'ready',
+            'emergencyDispense': false,
+          });
+        } catch (_) {}
       }
 
       if (mounted) {
@@ -277,7 +314,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
               children: [
                 Icon(Icons.emergency_rounded, color: Colors.white, size: 18),
                 SizedBox(width: 10),
-                Text('Emergency dispense signal sent!'),
+                Text('Emergency dispense signal sent and logged!'),
               ],
             ),
             backgroundColor: const Color(0xFFDC2626),
@@ -338,43 +375,279 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
   Future<void> _onDispenseNow(Map<String, dynamic> med) async {
     final uid = _uid;
     if (uid == null) return;
+    if (_isDispensing) return;
+    setState(() => _isDispensing = true);
+
     try {
       final compStr = (med['compartment'] ?? 'C1').toString();
       final slotMatch = RegExp(r'\d+').firstMatch(compStr);
       final slotNum = slotMatch != null ? int.tryParse(slotMatch.group(0)!) ?? 1 : 1;
+      final medName = (med['medicationName'] ?? 'Medication').toString();
 
-      if (_deviceId != null) {
-        await FirebaseFirestore.instance
-            .collection('devices')
-            .doc(_deviceId)
-            .update({
-          'dispenseTriggerSlot': slotNum,
-          'pendingDispense': {
-            'compartment': 'C$slotNum',
-            'medicationName': med['medicationName'] ?? '',
-            'requestedAt': FieldValue.serverTimestamp(),
-            'requestedBy': uid,
-          },
-        });
+      // 1. Verify Compartment & Medication Matching
+      final compQuery = await FirebaseFirestore.instance
+          .collection('compartments')
+          .where('patientUid', isEqualTo: uid)
+          .where('compartmentNumber', isEqualTo: slotNum)
+          .limit(1)
+          .get();
+
+      DocumentSnapshot<Map<String, dynamic>>? compDoc;
+      if (compQuery.docs.isNotEmpty) {
+        compDoc = compQuery.docs.first;
+      } else {
+        final directDoc = await FirebaseFirestore.instance
+            .collection('compartments')
+            .doc('comp_$slotNum')
+            .get();
+        if (directDoc.exists) compDoc = directDoc;
       }
 
-      // Direct Realtime Database Hardware Trigger to ESP32
-      final url = Uri.parse(
-          'https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/dispense_trigger.json');
-      await http.put(url, body: jsonEncode(slotNum));
+      if (compDoc != null && compDoc.exists) {
+        final compData = compDoc.data() ?? {};
+        final compMedName = (compData['medicationName'] ?? '').toString().trim();
+        final stockCount = (compData['stockCount'] as num?)?.toInt() ?? 0;
+
+        // Verify compartment matches intended medication if configured
+        if (compMedName.isNotEmpty &&
+            !compMedName.toLowerCase().contains(medName.toLowerCase()) &&
+            !medName.toLowerCase().contains(compMedName.toLowerCase())) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                    'Compartment mismatch: Slot C$slotNum contains $compMedName, not $medName.'),
+                backgroundColor: const Color(0xFFEF4444),
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+            );
+          }
+          await FirebaseFirestore.instance.collection('dispensingLogs').add({
+            'patientUid': uid,
+            'deviceId': _deviceId ?? '',
+            'compartment': 'C$slotNum',
+            'medicationName': medName,
+            'type': 'dispense_blocked',
+            'status': 'compartment_mismatch',
+            'reason': 'Slot C$slotNum contains $compMedName instead of $medName',
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+          return;
+        }
+
+        // Check stock availability
+        if (stockCount <= 0) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Compartment C$slotNum ($medName) is out of stock!'),
+                backgroundColor: const Color(0xFFEF4444),
+                behavior: SnackBarBehavior.floating,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+            );
+          }
+          await FirebaseFirestore.instance.collection('dispensingLogs').add({
+            'patientUid': uid,
+            'deviceId': _deviceId ?? '',
+            'compartment': 'C$slotNum',
+            'medicationName': medName,
+            'type': 'dispense_blocked',
+            'status': 'out_of_stock',
+            'reason': 'Compartment has 0 stock remaining',
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+          return;
+        }
+
+        // Check Expiry Date
+        dynamic rawExpiry = compData['expiryDate'] ??
+            compData['expirationDate'] ??
+            med['expiryDate'] ??
+            med['expirationDate'];
+        DateTime? expiryDate;
+        if (rawExpiry is Timestamp) {
+          expiryDate = rawExpiry.toDate();
+        } else if (rawExpiry is String && rawExpiry.isNotEmpty) {
+          expiryDate = DateTime.tryParse(rawExpiry);
+        }
+        if (expiryDate != null && expiryDate.isBefore(DateTime.now())) {
+          // EXPIRED MEDICATION: Block dispensing, alert caregiver/contacts, log event
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'SAFETY BLOCKED: $medName in Slot C$slotNum has expired! Dispensing halted.',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                backgroundColor: const Color(0xFFDC2626),
+                behavior: SnackBarBehavior.floating,
+                duration: const Duration(seconds: 4),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+            );
+          }
+
+          // In-app alert
+          await FirebaseFirestore.instance
+              .collection('notifications')
+              .doc(uid)
+              .collection('items')
+              .add({
+            'title': 'Expired Medication Alert: $medName',
+            'body':
+                'Dispensing blocked for slot C$slotNum because medication expired on ${DateFormat('MMM d, yyyy').format(expiryDate)}.',
+            'type': 'expired_alert',
+            'isRead': false,
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+
+          // SMS alert to contacts
+          await _dispatchSmsAlertsToContacts(
+            message:
+                'SAFETY ALERT: Dispensing for $medName (Slot C$slotNum) was BLOCKED because the medication has expired. Please replace stock immediately.',
+            triggeredBy: 'expired_medication',
+          );
+
+          // Record in dispensingLogs
+          await FirebaseFirestore.instance.collection('dispensingLogs').add({
+            'patientUid': uid,
+            'deviceId': _deviceId ?? '',
+            'compartment': 'C$slotNum',
+            'medicationName': medName,
+            'type': 'dispense_blocked',
+            'status': 'expired',
+            'reason': 'Expired on ${expiryDate.toIso8601String()}',
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+          return;
+        }
+      }
+
+      // 2. Hardware / Device Safety & State Verification
+      if (_deviceId != null) {
+        try {
+          final devDoc = await FirebaseFirestore.instance
+              .collection('devices')
+              .doc(_deviceId)
+              .get();
+          final devData = devDoc.data();
+          final devStatus =
+              (devData?['status'] as String? ?? 'ready').toLowerCase();
+          if (devStatus == 'error') {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text(
+                      'Device is currently reporting a hardware error. Dispensing aborted.'),
+                  backgroundColor: const Color(0xFFEF4444),
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+              );
+            }
+            return;
+          }
+
+          await FirebaseFirestore.instance
+              .collection('devices')
+              .doc(_deviceId)
+              .update({
+            'status': 'dispensing',
+            'dispenseTriggerSlot': slotNum,
+            'pendingDispense': {
+              'compartment': 'C$slotNum',
+              'medicationName': medName,
+              'requestedAt': FieldValue.serverTimestamp(),
+              'requestedBy': uid,
+            },
+          });
+        } catch (e) {
+          debugPrint('Device status update warning: $e');
+        }
+      }
+
+      // 3. Direct Realtime Database Hardware Trigger to ESP32
+      try {
+        final url = Uri.parse(
+            'https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/dispense_trigger.json');
+        await http.put(url, body: jsonEncode(slotNum));
+      } catch (e) {
+        debugPrint('RTDB hardware trigger warning: $e');
+      }
+
+      // 4. Decrement Stock Count if Compartment exists
+      if (compDoc != null && compDoc.exists) {
+        final curStock = (compDoc.data()?['stockCount'] as num?)?.toInt() ?? 0;
+        if (curStock > 0) {
+          await compDoc.reference.update({
+            'stockCount': curStock - 1,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      }
+
+      // 5. Record Successful Scheduled Dispense in dispensingLogs
+      await FirebaseFirestore.instance.collection('dispensingLogs').add({
+        'patientUid': uid,
+        'patientId': uid,
+        'deviceId': _deviceId ?? '',
+        'medicationName': medName,
+        'compartment': 'C$slotNum',
+        'dosage': med['dosage'] ?? '',
+        'type': 'dispense_success',
+        'status': 'taken',
+        'timestamp': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      // 6. Reset device state to ready
+      if (_deviceId != null) {
+        try {
+          await FirebaseFirestore.instance
+              .collection('devices')
+              .doc(_deviceId)
+              .update({
+            'status': 'ready',
+            'dispenseTriggerSlot': 0,
+          });
+        } catch (_) {}
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Hardware dispense signal sent for Slot C$slotNum (${med['medicationName']})!'),
+            content: Text(
+                'Hardware dispense signal sent for Slot C$slotNum ($medName)!'),
             backgroundColor: const Color(0xFF00A36C),
             behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           ),
         );
       }
     } catch (e) {
       debugPrint('Dispense trigger error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error during dispensing: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isDispensing = false);
     }
   }
 
@@ -1131,7 +1404,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
         'cb': () => Navigator.push(
             context,
             MaterialPageRoute(
-                builder: (_) => const EmergencyContactsScreen())),
+                builder: (_) => EmergencyContactsScreen(patientUid: _uid))),
       },
       {
         'icon': Icons.inventory_2_outlined,
@@ -1139,13 +1412,15 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
         'cb': () => Navigator.push(
             context,
             MaterialPageRoute(
-                builder: (_) => CompartmentInventoryScreen(isCaregiver: widget.isCaregiver))),
+                builder: (_) => CompartmentInventoryScreen(
+                    isCaregiver: widget.isCaregiver,
+                    patientUid: _uid))),
       },
       {
         'icon': Icons.wifi_rounded,
         'label': 'Device\nConnected',
         'cb': () => Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const DeviceConnectedScreen())),
+            MaterialPageRoute(builder: (_) => DeviceConnectedScreen(patientUid: _uid))),
       },
     ];
 

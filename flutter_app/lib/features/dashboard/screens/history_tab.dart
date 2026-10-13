@@ -8,7 +8,8 @@ import 'alerts_tab.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class PatientHistoryTab extends StatefulWidget {
-  const PatientHistoryTab({super.key});
+  final String? patientUid;
+  const PatientHistoryTab({super.key, this.patientUid});
 
   @override
   State<PatientHistoryTab> createState() => _PatientHistoryTabState();
@@ -17,7 +18,7 @@ class PatientHistoryTab extends StatefulWidget {
 class _PatientHistoryTabState extends State<PatientHistoryTab> {
   String _historyFilter = 'Week';
 
-  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  String? get _uid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
 
   DateTimeRange get _dateRange {
     final now = DateTime.now();

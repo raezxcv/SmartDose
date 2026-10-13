@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../services/pairing_service.dart';
@@ -54,18 +55,93 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
     super.dispose();
   }
 
+  void _showDeviceConnectDialog(String deviceId) {
+    final user = FirebaseAuth.instance.currentUser;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: Row(
+          children: [
+            const Icon(Icons.router_rounded, color: Color(0xFF10B981)),
+            const SizedBox(width: 10),
+            Text('Connect $deviceId?'),
+          ],
+        ),
+        content: Text(
+          'SmartDose Dispenser ($deviceId) detected. Would you like to connect this unit to your account?',
+          style: const TextStyle(fontSize: 14, color: Color(0xFF4B5563)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF6B7280))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              if (user == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please sign in to link device.')),
+                );
+                return;
+              }
+              setState(() => _isProcessing = true);
+              try {
+                await _pairingService.linkDeviceToPatient(
+                  deviceId: deviceId,
+                  patientUid: user.uid,
+                  patientName: user.displayName ?? 'Patient',
+                );
+                if (mounted) {
+                  setState(() => _isProcessing = false);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('SmartDose Dispenser $deviceId connected successfully!'),
+                      backgroundColor: const Color(0xFF10B981),
+                    ),
+                  );
+                  Navigator.pop(context);
+                }
+              } catch (e) {
+                if (mounted) {
+                  setState(() => _isProcessing = false);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(e.toString().replaceAll('Exception: ', '')),
+                      backgroundColor: Colors.redAccent,
+                    ),
+                  );
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF10B981),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Connect Device', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _handleScannedCode(String rawCode) async {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
 
     try {
-      final patientData = await _pairingService.validatePairingToken(rawCode);
+      final result = await _pairingService.validatePairingToken(rawCode);
       if (mounted) {
         setState(() => _isProcessing = false);
-        showDialog(
-          context: context,
-          builder: (_) => ConfirmPairingDialog(patientData: patientData),
-        );
+        if (result['type'] == 'device') {
+          _showDeviceConnectDialog(result['deviceId'] as String);
+        } else {
+          showDialog(
+            context: context,
+            builder: (_) => ConfirmPairingDialog(patientData: result),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -88,12 +164,12 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
       builder: (ctx) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          title: const Text('Enter Pairing Code'),
+          title: const Text('Enter Code or Device ID'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Enter the 8-character pairing code displayed under the patient\'s QR code.',
+                'Enter the patient\'s pairing code (e.g. SPD-8F4K-91XQ) or SmartDose hardware device ID (e.g. SD-0119).',
                 style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
               ),
               const SizedBox(height: 16),
@@ -101,7 +177,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 controller: controller,
                 textCapitalization: TextCapitalization.characters,
                 decoration: InputDecoration(
-                  hintText: 'e.g. SPD-8F4K-91XQ',
+                  hintText: 'e.g. SPD-8F4K-91XQ or SD-0119',
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),

@@ -9,7 +9,8 @@ import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class PatientMedsTab extends StatefulWidget {
   final bool isCaregiver;
-  const PatientMedsTab({super.key, this.isCaregiver = false});
+  final String? patientUid;
+  const PatientMedsTab({super.key, this.isCaregiver = false, this.patientUid});
 
   @override
   State<PatientMedsTab> createState() => _PatientMedsTabState();
@@ -20,7 +21,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
   late List<DateTime> _weekDays;
   Timer? _countdownTimer;
 
-  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  String? get _uid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
 
   @override
   void initState() {

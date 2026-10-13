@@ -7,11 +7,13 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 class PatientAlertsTab extends StatefulWidget {
   final VoidCallback? onMarkAllRead;
   final bool showAppBar;
+  final String? patientUid;
 
   const PatientAlertsTab({
     super.key,
     this.onMarkAllRead,
     this.showAppBar = true,
+    this.patientUid,
   });
 
   @override
@@ -19,7 +21,7 @@ class PatientAlertsTab extends StatefulWidget {
 }
 
 class _PatientAlertsTabState extends State<PatientAlertsTab> {
-  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+  String? get _uid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
 
   Stream<QuerySnapshot<Map<String, dynamic>>>? get _notificationsStream {
     final uid = _uid;

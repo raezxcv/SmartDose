@@ -6,15 +6,21 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
+import 'package:qr_flutter/qr_flutter.dart';
+import '../../pairing/screens/connect_patient_screen.dart';
+import '../../pairing/services/pairing_service.dart';
 
 class DeviceConnectedScreen extends StatefulWidget {
-  const DeviceConnectedScreen({super.key});
+  final String? patientUid;
+  const DeviceConnectedScreen({super.key, this.patientUid});
 
   @override
   State<DeviceConnectedScreen> createState() => _DeviceConnectedScreenState();
 }
 
 class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
+  final PairingService _pairingService = PairingService();
+  String? get _targetUid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
   Map<String, dynamic>? _deviceData;
   String? _deviceId;
   bool _loading = true;
@@ -81,7 +87,7 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
   }
 
   Future<void> _listenToDevice() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = _targetUid;
     if (uid == null) {
       if (mounted) setState(() => _loading = false);
       return;
@@ -90,8 +96,14 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
       final userDoc =
           await FirebaseFirestore.instance.collection('users').doc(uid).get();
       final deviceId = userDoc.data()?['deviceId'] as String?;
-      if (deviceId == null) {
-        if (mounted) setState(() => _loading = false);
+      if (deviceId == null || deviceId.trim().isEmpty) {
+        if (mounted) {
+          setState(() {
+            _deviceId = null;
+            _deviceData = null;
+            _loading = false;
+          });
+        }
         return;
       }
 
@@ -121,6 +133,322 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
     setState(() => _loading = true);
     await _deviceSubscription?.cancel();
     await _listenToDevice();
+  }
+
+  Future<void> _connectDeviceId(String deviceId) async {
+    final uid = _targetUid;
+    final userName = FirebaseAuth.instance.currentUser?.displayName ?? 'Patient';
+    if (uid == null) return;
+    setState(() => _loading = true);
+    try {
+      await _pairingService.linkDeviceToPatient(
+        deviceId: deviceId,
+        patientUid: uid,
+        patientName: userName,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Connected to SmartDose Dispenser $deviceId!'),
+            backgroundColor: const Color(0xFF00A36C),
+          ),
+        );
+      }
+      await _refresh();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.toString().replaceAll('Exception: ', '')),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showManualDeviceConnectDialog() {
+    final ctrl = TextEditingController(text: 'SD-');
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text('Enter Device Serial ID'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Enter the SmartDose hardware serial number (e.g. SD-0119) found on your dispenser unit.',
+              style: TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: ctrl,
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                hintText: 'e.g. SD-0119',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Color(0xFF00A36C), width: 2),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF6B7280))),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final id = ctrl.text.trim();
+              if (id.isNotEmpty) {
+                Navigator.pop(ctx);
+                _connectDeviceId(id);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00A36C),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Connect', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeviceQrModal() {
+    if (_deviceId == null) return;
+    final payload = PairingService.generateDeviceQrPayload(_deviceId!);
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(28.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'SmartDose Device QR',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.onSurface),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'ID: $_deviceId',
+              style: const TextStyle(fontSize: 15, fontFamily: 'monospace', fontWeight: FontWeight.bold, color: Color(0xFF00A36C)),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: QrImageView(
+                data: payload,
+                version: QrVersions.auto,
+                size: 200,
+                backgroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Scan this QR code with another SmartDose mobile app to establish connectivity.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.65)),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUnpairedState(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final cardBg = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final primaryText = theme.colorScheme.onSurface;
+    final secondaryText = primaryText.withValues(alpha: 0.65);
+    const emerald = Color(0xFF00A36C);
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
+      child: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(26),
+            decoration: BoxDecoration(
+              color: cardBg,
+              borderRadius: BorderRadius.circular(28),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.05),
+                  blurRadius: 16,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Column(
+              children: [
+                Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF132E23) : const Color(0xFFE6F7F0),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(LucideIcons.router, color: emerald, size: 36),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  'No Dispenser Connected',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryText,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Link your SmartDose 10-compartment carousel dispenser using the QR code printed on the unit or by entering the device serial ID.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: secondaryText,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // Scan Device QR Button
+                GestureDetector(
+                  onTap: () async {
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ConnectPatientScreen()),
+                    );
+                    _refresh();
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF00A36C), Color(0xFF00C882)],
+                      ),
+                      borderRadius: BorderRadius.circular(26),
+                      boxShadow: [
+                        BoxShadow(
+                          color: emerald.withValues(alpha: 0.35),
+                          blurRadius: 14,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(LucideIcons.qrCode, color: Colors.white, size: 20),
+                        SizedBox(width: 10),
+                        Text(
+                          'Scan Device QR Code',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Enter Serial ID Button
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: OutlinedButton.icon(
+                    onPressed: _showManualDeviceConnectDialog,
+                    icon: const Icon(Icons.keyboard_outlined, color: emerald, size: 20),
+                    label: const Text(
+                      'Enter Device Serial ID',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: emerald),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: emerald, width: 1.5),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 14),
+                // Quick Demo Connect
+                TextButton.icon(
+                  onPressed: () => _connectDeviceId('SD-0119'),
+                  icon: const Icon(Icons.bolt_rounded, size: 16, color: Color(0xFFF59E0B)),
+                  label: const Text(
+                    'Quick-Connect Demo Unit (SD-0119)',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFFF59E0B)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          // Info Card
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: cardBg,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: isDark ? const Color(0xFF27272A) : const Color(0xFFE5E7EB),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.info_outline_rounded, color: emerald, size: 20),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Where is the QR code?',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: primaryText,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '1. Check the QR sticker on the base or rear of your SmartDose dispenser.\n'
+                  '2. The serial format is SD-XXXX (e.g. SD-0119).\n'
+                  '3. Ensure the ESP32 controller and Raspberry Pi edge hub are powered on and connected to Wi-Fi.',
+                  style: TextStyle(fontSize: 13, color: secondaryText, height: 1.5),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -186,6 +514,12 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
           ),
         ),
         actions: [
+          if (_deviceId != null && _deviceId!.isNotEmpty)
+            IconButton(
+              icon: const Icon(LucideIcons.qrCode, color: Color(0xFF00A36C)),
+              tooltip: 'View Device QR',
+              onPressed: _showDeviceQrModal,
+            ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded, color: Color(0xFF00A36C)),
             onPressed: _refresh,
@@ -196,7 +530,9 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
       body: _loading
           ? const Center(
               child: CircularProgressIndicator(color: Color(0xFF00A36C)))
-          : RefreshIndicator(
+          : (_deviceId == null || _deviceId!.trim().isEmpty)
+              ? _buildUnpairedState(context)
+              : RefreshIndicator(
               onRefresh: _refresh,
               color: const Color(0xFF00A36C),
               child: SingleChildScrollView(
@@ -864,12 +1200,12 @@ class _DeviceConnectedScreenState extends State<DeviceConnectedScreen> {
                     ),
                     onPressed: () async {
                       Navigator.pop(ctx);
-                      final uid = FirebaseAuth.instance.currentUser?.uid;
+                      final uid = _targetUid;
                       if (uid == null) return;
-                      await FirebaseFirestore.instance
-                          .collection('users')
-                          .doc(uid)
-                          .update({'deviceId': FieldValue.delete()});
+                      await _pairingService.unpairDevice(
+                        deviceId: _deviceId ?? '',
+                        patientUid: uid,
+                      );
                       if (mounted) Navigator.pop(context);
                     },
                     child: const Text('Unpair',
