@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
 import '../services/pairing_service.dart';
 import 'confirm_pairing_dialog.dart';
+import 'linked_account_screen.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
 
 class ConnectPatientScreen extends StatefulWidget {
@@ -16,15 +20,41 @@ class ConnectPatientScreen extends StatefulWidget {
 class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
   final MobileScannerController _scannerController = MobileScannerController();
   final PairingService _pairingService = PairingService();
+  final ImagePicker _imagePicker = ImagePicker();
+
   bool _isProcessing = false;
   bool _isTorchOn = false;
   bool _hasCameraPermission = false;
   bool _isCheckingPermission = true;
 
+  bool _isCheckingExistingPairing = true;
+  Map<String, dynamic>? _existingPairing;
+
   @override
   void initState() {
     super.initState();
+    _checkExistingCaregiverPairing();
     _checkAndRequestCameraPermission();
+  }
+
+  Future<void> _checkExistingCaregiverPairing() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      if (mounted) setState(() => _isCheckingExistingPairing = false);
+      return;
+    }
+
+    try {
+      final active = await _pairingService.getActivePairingForCaregiver(uid);
+      if (mounted) {
+        setState(() {
+          _existingPairing = active;
+          _isCheckingExistingPairing = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _isCheckingExistingPairing = false);
+    }
   }
 
   Future<void> _checkAndRequestCameraPermission() async {
@@ -55,6 +85,53 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
     super.dispose();
   }
 
+  Future<void> _pickImageFromGallery() async {
+    if (_isProcessing) return;
+
+    try {
+      final XFile? file = await _imagePicker.pickImage(source: ImageSource.gallery);
+      if (file == null) return;
+
+      setState(() => _isProcessing = true);
+
+      final BarcodeCapture? capture = await _scannerController.analyzeImage(file.path);
+      final barcode = capture?.barcodes.firstOrNull;
+
+      if (barcode != null && barcode.rawValue != null && barcode.rawValue!.trim().isNotEmpty) {
+        await _handleScannedCode(barcode.rawValue!);
+      } else {
+        if (mounted) {
+          setState(() => _isProcessing = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.info_outline_rounded, color: Colors.white, size: 18),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text('No SmartDose QR code detected in the selected image. Please try another image.'),
+                  ),
+                ],
+              ),
+              backgroundColor: Color(0xFFEF4444),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to read image: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
+  }
+
   void _showDeviceConnectDialog(String deviceId) {
     final user = FirebaseAuth.instance.currentUser;
     showDialog(
@@ -63,13 +140,13 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         title: Row(
           children: [
-            const Icon(Icons.router_rounded, color: Color(0xFF10B981)),
+            const Icon(Icons.router_rounded, color: Color(0xFF00A36C)),
             const SizedBox(width: 10),
             Text('Connect $deviceId?'),
           ],
         ),
         content: Text(
-          'SmartDose Dispenser ($deviceId) detected. Would you like to connect this unit to your account?',
+          'SmartDose Dispenser ($deviceId) detected. Would you like to connect this unit to the patient account?',
           style: const TextStyle(fontSize: 14, color: Color(0xFF4B5563)),
         ),
         actions: [
@@ -98,7 +175,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('SmartDose Dispenser $deviceId connected successfully!'),
-                      backgroundColor: const Color(0xFF10B981),
+                      backgroundColor: const Color(0xFF00A36C),
                     ),
                   );
                   Navigator.pop(context);
@@ -109,14 +186,14 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(e.toString().replaceAll('Exception: ', '')),
-                      backgroundColor: Colors.redAccent,
+                      backgroundColor: const Color(0xFFEF4444),
                     ),
                   );
                 }
               }
             },
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF10B981),
+              backgroundColor: const Color(0xFF00A36C),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             child: const Text('Connect Device', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
@@ -132,24 +209,64 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
 
     try {
       final result = await _pairingService.validatePairingToken(rawCode);
-      if (mounted) {
-        setState(() => _isProcessing = false);
-        if (result['type'] == 'device') {
-          _showDeviceConnectDialog(result['deviceId'] as String);
-        } else {
-          showDialog(
-            context: context,
-            builder: (_) => ConfirmPairingDialog(patientData: result),
-          );
-        }
+      if (!mounted) return;
+
+      setState(() => _isProcessing = false);
+
+      if (result['type'] == 'device') {
+        _showDeviceConnectDialog(result['deviceId'] as String);
+        return;
       }
+
+      // 1-to-1 Pairing Rule: Check if patient already has another caregiver
+      if (result['isAlreadyLinked'] == true) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706), size: 24),
+                SizedBox(width: 8),
+                Text('Already Linked'),
+              ],
+            ),
+            content: Text(
+              '${result['name'] ?? 'This patient'} is already paired with another caregiver (${result['existingCaregiverName'] ?? 'Caregiver'}). Under SmartDose 1-to-1 pairing rules, only one caregiver can be linked at a time.',
+              style: const TextStyle(fontSize: 14, height: 1.45),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK', style: TextStyle(color: Color(0xFF00A36C), fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+
+      // Patient is eligible for pairing: show confirmation dialog
+      showDialog(
+        context: context,
+        builder: (_) => ConfirmPairingDialog(patientData: result),
+      );
     } catch (e) {
       if (mounted) {
         setState(() => _isProcessing = false);
+        final errorMsg = e.toString().replaceAll('Exception: ', '');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(e.toString().replaceAll('Exception: ', '')),
-            backgroundColor: Colors.redAccent,
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline_rounded, color: Colors.white, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Text(errorMsg)),
+              ],
+            ),
+            backgroundColor: const Color(0xFFDC2626),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             duration: const Duration(seconds: 4),
           ),
         );
@@ -164,7 +281,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
       builder: (ctx) {
         return AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-          title: const Text('Enter Code or Device ID'),
+          title: const Text('Enter Code Manually'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -177,11 +294,11 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 controller: controller,
                 textCapitalization: TextCapitalization.characters,
                 decoration: InputDecoration(
-                  hintText: 'e.g. SPD-8F4K-91XQ or SD-0119',
+                  hintText: 'e.g. SPD-8F4K-91XQ',
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                   focusedBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(color: Color(0xFF10B981), width: 2),
+                    borderSide: const BorderSide(color: Color(0xFF00A36C), width: 2),
                   ),
                 ),
               ),
@@ -201,7 +318,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 }
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF10B981),
+                backgroundColor: const Color(0xFF00A36C),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               child: const Text('Submit', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
@@ -214,7 +331,19 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const emerald = Color(0xFF10B981);
+    const emerald = Color(0xFF00A36C);
+
+    if (_isCheckingExistingPairing) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(child: SmartDoseLoading(size: 80)),
+      );
+    }
+
+    // Caregiver Already Has an Active Patient -> Prevent 2nd active pairing
+    if (_existingPairing != null) {
+      return _buildAlreadyLinkedCaregiverState(emerald);
+    }
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -230,6 +359,13 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
         ),
         actions: [
+          // Select Image From Gallery Action
+          IconButton(
+            icon: const Icon(Icons.photo_library_outlined, color: Colors.white),
+            onPressed: _isProcessing ? null : _pickImageFromGallery,
+            tooltip: 'Select QR Image from Gallery',
+          ),
+          // Torch Flashlight Toggle
           if (_hasCameraPermission)
             IconButton(
               icon: Icon(
@@ -245,9 +381,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
         ],
       ),
       body: _isCheckingPermission
-          ? const Center(
-              child: SmartDoseLoading(size: 80),
-            )
+          ? const Center(child: SmartDoseLoading(size: 80))
           : !_hasCameraPermission
               ? _buildPermissionDeniedState(emerald)
               : Stack(
@@ -266,19 +400,26 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                       },
                     ),
 
-                    // Camera Viewfinder Frame Overlay
-                    Center(
+                    // Camera Viewfinder Frame Overlay (shifted slightly upward and horizontally centered)
+                    Align(
+                      alignment: const Alignment(0, -0.22),
                       child: Container(
                         width: 260,
                         height: 260,
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(24),
-                          border: Border.all(color: emerald, width: 3),
+                          border: Border.all(color: emerald, width: 3.5),
+                          boxShadow: [
+                            BoxShadow(
+                              color: emerald.withValues(alpha: 0.25),
+                              blurRadius: 18,
+                            ),
+                          ],
                         ),
                       ),
                     ),
 
-                    // Instruction & Manual Entry Button Bottom Bar
+                    // Instruction & Action Bottom Bar
                     Positioned(
                       bottom: 30,
                       left: 24,
@@ -286,33 +427,58 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                       child: Column(
                         children: [
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.7),
-                              borderRadius: BorderRadius.circular(16),
+                              color: Colors.black.withValues(alpha: 0.75),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(color: Colors.white12),
                             ),
                             child: const Text(
-                              'Position the patient\'s QR code within the frame to scan',
+                              'Position the patient\'s QR code within the frame or choose an image from gallery',
                               textAlign: TextAlign.center,
-                              style: TextStyle(color: Colors.white, fontSize: 13),
+                              style: TextStyle(color: Colors.white, fontSize: 13, height: 1.3),
                             ),
                           ),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            height: 50,
-                            child: ElevatedButton.icon(
-                              onPressed: _showManualEntryDialog,
-                              icon: const Icon(Icons.keyboard_outlined, color: Colors.white),
-                              label: const Text(
-                                'Enter Pairing Code Manually',
-                                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                          const SizedBox(height: 14),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: SizedBox(
+                                  height: 50,
+                                  child: OutlinedButton.icon(
+                                    onPressed: _pickImageFromGallery,
+                                    icon: const Icon(Icons.photo_library_outlined, color: Colors.white, size: 20),
+                                    label: const Text(
+                                      'Gallery',
+                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                    ),
+                                    style: OutlinedButton.styleFrom(
+                                      side: const BorderSide(color: Colors.white30, width: 1.5),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    ),
+                                  ),
+                                ),
                               ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: emerald,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: SizedBox(
+                                  height: 50,
+                                  child: ElevatedButton.icon(
+                                    onPressed: _showManualEntryDialog,
+                                    icon: const Icon(Icons.keyboard_outlined, color: Colors.white, size: 20),
+                                    label: const Text(
+                                      'Enter Code',
+                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                    ),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: emerald,
+                                      elevation: 0,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    ),
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
                           ),
                         ],
                       ),
@@ -320,16 +486,16 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
 
                     if (_isProcessing)
                       Container(
-                        color: Colors.black54,
+                        color: Colors.black.withValues(alpha: 0.65),
                         child: const Center(
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              SmartDoseLoading(size: 80),
-                              SizedBox(height: 16),
+                              SmartDoseLoading(size: 80, color: Colors.white),
+                              SizedBox(height: 18),
                               Text(
-                                'Validating QR code...',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                'Validating SmartDose QR code...',
+                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
                               ),
                             ],
                           ),
@@ -337,6 +503,108 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                       ),
                   ],
                 ),
+    );
+  }
+
+  Widget _buildAlreadyLinkedCaregiverState(Color emerald) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final primaryTextColor = theme.colorScheme.onSurface;
+    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
+    final patientName = _existingPairing?['patientName'] ?? 'your patient';
+
+    return Scaffold(
+      backgroundColor: theme.scaffoldBackgroundColor,
+      appBar: AppBar(
+        title: Text('Connect Patient', style: TextStyle(fontWeight: FontWeight.bold, color: primaryTextColor)),
+        backgroundColor: cardBgColor,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_ios_new_rounded, color: primaryTextColor),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(28.0),
+          child: Container(
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: cardBgColor,
+              borderRadius: BorderRadius.circular(28),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.05),
+                  blurRadius: 18,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(LucideIcons.userCheck, color: emerald, size: 36),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Patient Already Linked',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: primaryTextColor),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'You are already actively paired with $patientName. Under SmartDose strict 1-to-1 pairing rules, each caregiver is linked to only one patient.\n\nTo connect with another patient, please unlink your current patient first.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: secondaryTextColor, height: 1.5),
+                ),
+                const SizedBox(height: 28),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (_) => const LinkedAccountScreen(isCaregiver: true)),
+                      );
+                    },
+                    icon: const Icon(LucideIcons.userRound, color: Colors.white, size: 18),
+                    label: const Text(
+                      'Manage Linked Patient',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: emerald,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: OutlinedButton.styleFrom(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    ),
+                    child: const Text('Back to Home', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -414,14 +682,13 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 width: double.infinity,
                 height: 50,
                 child: OutlinedButton.icon(
-                  onPressed: _showManualEntryDialog,
-                  icon: Icon(Icons.keyboard_outlined, color: primaryTextColor),
-                  label: Text(
-                    'Enter Pairing Code Manually',
-                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: primaryTextColor),
+                  onPressed: _pickImageFromGallery,
+                  icon: const Icon(Icons.photo_library_outlined),
+                  label: const Text(
+                    'Choose Image from Gallery',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                   ),
                   style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: theme.dividerColor, width: 1.5),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
                 ),

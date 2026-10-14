@@ -929,12 +929,32 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  _greeting,
-                  style: TextStyle(
-                      fontSize: 15,
-                      color: secondaryTextColor,
-                      fontWeight: FontWeight.w500),
+                Row(
+                  children: [
+                    Text(
+                      _greeting,
+                      style: TextStyle(
+                          fontSize: 15,
+                          color: secondaryTextColor,
+                          fontWeight: FontWeight.w500),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00A36C).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Text(
+                        'Patient',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF00A36C),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 2),
                 Text(

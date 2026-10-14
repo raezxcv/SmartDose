@@ -28,6 +28,7 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
     'Parent',
     'Sibling',
     'Grandchild',
+    'Nurse / Caregiver',
     'Other',
   ];
 
@@ -49,6 +50,7 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
         caregiverName: _caregiverName,
         caregiverEmail: _caregiverEmail,
         relationship: _selectedRelationship,
+        tokenId: widget.patientData['tokenId'],
       );
 
       if (mounted) {
@@ -59,14 +61,20 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
           context: context,
           builder: (ctx) => AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-            title: const Text('Request Sent!'),
+            title: const Text('Pairing Request Sent!'),
             content: Text(
-              'A connection request has been sent to ${widget.patientData['name']}. Once approved, you will be connected.',
+              'A connection request has been sent to ${widget.patientData['name']}. Once the patient approves on their SmartDose app, your accounts will be linked.',
+              style: const TextStyle(fontSize: 14, height: 1.4),
             ),
             actions: [
-              TextButton(
+              ElevatedButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('OK', style: TextStyle(color: Color(0xFF10B981), fontWeight: FontWeight.bold)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00A36C),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('OK', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ],
           ),
@@ -76,7 +84,10 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
       if (mounted) {
         setState(() => _isSubmitting = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString().replaceAll('Exception: ', ''))),
+          SnackBar(
+            content: Text(e.toString().replaceAll('Exception: ', '')),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
         );
       }
     }
@@ -84,14 +95,21 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
 
   @override
   Widget build(BuildContext context) {
-    const emerald = Color(0xFF10B981);
+    const emerald = Color(0xFF00A36C);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final primaryTextColor = theme.colorScheme.onSurface;
+    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
+
     final patientName = widget.patientData['name'] ?? 'Patient';
     final patientEmail = widget.patientData['email'] ?? '';
     final age = widget.patientData['age'];
+    final bool isAlreadyLinked = widget.patientData['isAlreadyLinked'] == true;
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-      backgroundColor: Colors.white,
+      backgroundColor: cardBgColor,
       child: Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
@@ -102,8 +120,8 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
             Container(
               width: 72,
               height: 72,
-              decoration: const BoxDecoration(
-                color: Color(0xFFECFDF5),
+              decoration: BoxDecoration(
+                color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
                 shape: BoxShape.circle,
               ),
               alignment: Alignment.center,
@@ -117,77 +135,110 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
             // Patient Name & Info
             Text(
               patientName,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFF1F2937)),
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: primaryTextColor),
               textAlign: TextAlign.center,
             ),
             if (patientEmail.isNotEmpty || age != null) ...[
               const SizedBox(height: 4),
               Text(
                 '${age != null ? 'Age $age · ' : ''}$patientEmail',
-                style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280)),
+                style: TextStyle(fontSize: 13, color: secondaryTextColor),
                 textAlign: TextAlign.center,
               ),
             ],
 
-            const SizedBox(height: 20),
-            const Divider(height: 1, color: Color(0xFFF3F4F6)),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
 
-            // Relationship Selector Title
-            const Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Select Your Relationship',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF374151)),
+            // Already linked notice
+            if (isAlreadyLinked) ...[
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF451A03) : const Color(0xFFFEF3C7),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFFFDE68A)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706), size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'This patient is already linked with another caregiver. The patient must unlink first before a new pairing can be requested.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
+              const SizedBox(height: 20),
+            ] else ...[
+              const Divider(height: 1),
+              const SizedBox(height: 18),
 
-            // Relationship Choice Chips
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _relationships.map((rel) {
-                final isSelected = _selectedRelationship == rel;
-                return ChoiceChip(
-                  label: Text(rel),
-                  selected: isSelected,
-                  selectedColor: emerald,
-                  backgroundColor: const Color(0xFFF3F4F6),
-                  labelStyle: TextStyle(
-                    color: isSelected ? Colors.white : const Color(0xFF4B5563),
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    fontSize: 13,
-                  ),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  side: BorderSide.none,
-                  onSelected: (selected) {
-                    if (selected) {
-                      setState(() => _selectedRelationship = rel);
-                    }
-                  },
-                );
-              }).toList(),
-            ),
+              // Relationship Selector Title
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Select Your Relationship',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryTextColor),
+                ),
+              ),
+              const SizedBox(height: 12),
 
-            const SizedBox(height: 24),
+              // Relationship Choice Chips
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _relationships.map((rel) {
+                  final isSelected = _selectedRelationship == rel;
+                  return ChoiceChip(
+                    label: Text(rel),
+                    selected: isSelected,
+                    selectedColor: emerald,
+                    backgroundColor: isDark ? const Color(0xFF27272A) : const Color(0xFFF3F4F6),
+                    labelStyle: TextStyle(
+                      color: isSelected
+                          ? Colors.white
+                          : (isDark ? Colors.white70 : const Color(0xFF4B5563)),
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      fontSize: 13,
+                    ),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    side: BorderSide.none,
+                    onSelected: (selected) {
+                      if (selected) {
+                        setState(() => _selectedRelationship = rel);
+                      }
+                    },
+                  );
+                }).toList(),
+              ),
 
-            // Send Connection Request Button
+              const SizedBox(height: 24),
+            ],
+
+            // Action Button
             SizedBox(
               width: double.infinity,
               height: 50,
               child: ElevatedButton(
-                onPressed: _isSubmitting ? null : _sendRequest,
+                onPressed: (isAlreadyLinked || _isSubmitting) ? null : _sendRequest,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: emerald,
-                  disabledBackgroundColor: emerald,
+                  disabledBackgroundColor: Colors.grey.shade400,
+                  elevation: 0,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 ),
                 child: _isSubmitting
                     ? const SmartDoseLoading(size: 32, color: Colors.white)
-                    : const Text(
-                        'Send Connection Request',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                    : Text(
+                        isAlreadyLinked ? 'Patient Already Linked' : 'Send Connection Request',
+                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                       ),
               ),
             ),

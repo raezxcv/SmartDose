@@ -317,6 +317,25 @@ class PairingService {
       }
     }
 
+    // Check if patient is already linked with another caregiver
+    try {
+      final activePairings = await _db
+          .collection('pairings')
+          .where('patientUid', isEqualTo: patientUid)
+          .limit(1)
+          .get();
+      if (activePairings.docs.isNotEmpty) {
+        final existing = activePairings.docs.first.data();
+        patientProfile['isAlreadyLinked'] = true;
+        patientProfile['existingCaregiverName'] =
+            existing['caregiverName'] ?? 'Another Caregiver';
+      } else {
+        patientProfile['isAlreadyLinked'] = false;
+      }
+    } catch (_) {
+      patientProfile['isAlreadyLinked'] = false;
+    }
+
     return {
       'type': 'pairing_token',
       'tokenId': doc.id,
@@ -410,8 +429,31 @@ class PairingService {
     required String caregiverEmail,
     required String relationship,
     String? caregiverPhoto,
+    String? tokenId,
   }) async {
-    // Check if pending request already exists
+    // 1. Strict 1-to-1 check: ensure caregiver does not already have an active linked patient
+    final cgPairings = await _db
+        .collection('pairings')
+        .where('caregiverUid', isEqualTo: caregiverUid)
+        .limit(1)
+        .get();
+    if (cgPairings.docs.isNotEmpty) {
+      throw Exception(
+          'You are already linked to a patient. SmartDose enforces a strict 1-to-1 relationship. Please unlink your current patient before connecting with another.');
+    }
+
+    // 2. Strict 1-to-1 check: ensure patient does not already have an active linked caregiver
+    final ptPairings = await _db
+        .collection('pairings')
+        .where('patientUid', isEqualTo: patientUid)
+        .limit(1)
+        .get();
+    if (ptPairings.docs.isNotEmpty) {
+      throw Exception(
+          'This patient is already linked with another caregiver. Under SmartDose rules, only one caregiver can be linked at a time.');
+    }
+
+    // 3. Check if pending request already exists
     final existing = await _db
         .collection('pairing_requests')
         .where('patientUid', isEqualTo: patientUid)
@@ -431,6 +473,7 @@ class PairingService {
       'caregiverEmail': caregiverEmail,
       'caregiverPhoto': caregiverPhoto,
       'relationship': relationship,
+      'tokenId': tokenId,
       'status': 'pending',
       'requestedAt': FieldValue.serverTimestamp(),
     });
@@ -453,21 +496,46 @@ class PairingService {
     });
   }
 
-  /// Patient approves a caregiver request
+  /// Patient approves a caregiver request, enforcing strict 1-to-1 pairing
   Future<void> approvePairingRequest(String requestId, Map<String, dynamic> requestData) async {
+    final patientUid = requestData['patientUid']?.toString() ?? '';
+    final caregiverUid = requestData['caregiverUid']?.toString() ?? '';
+    final caregiverName = requestData['caregiverName'] ?? 'Caregiver';
+    final caregiverEmail = requestData['caregiverEmail'] ?? '';
+    final relationship = requestData['relationship'] ?? 'Primary Caregiver';
+
+    // Verify neither party has an existing active pairing before approving
+    if (patientUid.isNotEmpty) {
+      final existingPt = await _db
+          .collection('pairings')
+          .where('patientUid', isEqualTo: patientUid)
+          .limit(1)
+          .get();
+      if (existingPt.docs.isNotEmpty) {
+        throw Exception(
+            'You are already paired with a caregiver. Unlink the existing caregiver first before accepting a new request.');
+      }
+    }
+
+    if (caregiverUid.isNotEmpty) {
+      final existingCg = await _db
+          .collection('pairings')
+          .where('caregiverUid', isEqualTo: caregiverUid)
+          .limit(1)
+          .get();
+      if (existingCg.docs.isNotEmpty) {
+        throw Exception(
+            'This caregiver is already paired with another patient.');
+      }
+    }
+
     await _db.collection('pairing_requests').doc(requestId).update({
       'status': 'approved',
       'approvedAt': FieldValue.serverTimestamp(),
     });
 
-    final patientUid = requestData['patientUid']?.toString() ?? '';
-    final caregiverUid = requestData['caregiverUid']?.toString() ?? '';
-    final caregiverName = requestData['caregiverName'] ?? 'Caregiver';
-    final caregiverEmail = requestData['caregiverEmail'] ?? '';
-    final relationship = requestData['relationship'] ?? 'Caregiver';
-
     // 1. Add to active pairings collection
-    await _db.collection('pairings').add({
+    final pairingDocRef = await _db.collection('pairings').add({
       'patientUid': patientUid,
       'patientName': requestData['patientName'] ?? 'Patient',
       'caregiverUid': caregiverUid,
@@ -476,6 +544,7 @@ class PairingService {
       'caregiverPhoto': requestData['caregiverPhoto'],
       'relationship': relationship,
       'role': 'Primary Caregiver',
+      'status': 'active',
       'createdAt': FieldValue.serverTimestamp(),
       'lastActive': FieldValue.serverTimestamp(),
     });
@@ -491,11 +560,28 @@ class PairingService {
       } catch (_) {}
     }
 
-    // 3. Update patient's caregiverIds array
+    // 3. Update patient's and caregiver's user records
     if (patientUid.isNotEmpty && caregiverUid.isNotEmpty) {
       try {
+        await _db.collection('users').doc(patientUid).set({
+          'linkedCaregiverUid': caregiverUid,
+          'linkedCaregiverName': caregiverName,
+          'pairingId': pairingDocRef.id,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        await _db.collection('users').doc(caregiverUid).set({
+          'linkedPatientUid': patientUid,
+          'linkedPatientName': requestData['patientName'] ?? 'Patient',
+          'pairingId': pairingDocRef.id,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        // Strict 1-to-1: overwrite caregiverIds with single caregiver
         await _db.collection('patients').doc(patientUid).set({
-          'caregiverIds': FieldValue.arrayUnion([caregiverUid]),
+          'caregiverIds': [caregiverUid],
+          'primaryCaregiverUid': caregiverUid,
+          'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       } catch (_) {}
 
@@ -564,8 +650,143 @@ class PairingService {
     });
   }
 
-  /// Remove a connected pairing
+  /// Look up active pairing for a patient
+  Future<Map<String, dynamic>?> getActivePairingForPatient(String patientUid) async {
+    if (patientUid.isEmpty) return null;
+    try {
+      final snap = await _db
+          .collection('pairings')
+          .where('patientUid', isEqualTo: patientUid)
+          .limit(1)
+          .get();
+      if (snap.docs.isNotEmpty) {
+        return {'pairingId': snap.docs.first.id, ...snap.docs.first.data()};
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Look up active pairing for a caregiver
+  Future<Map<String, dynamic>?> getActivePairingForCaregiver(String caregiverUid) async {
+    if (caregiverUid.isEmpty) return null;
+    try {
+      final snap = await _db
+          .collection('pairings')
+          .where('caregiverUid', isEqualTo: caregiverUid)
+          .limit(1)
+          .get();
+      if (snap.docs.isNotEmpty) {
+        return {'pairingId': snap.docs.first.id, ...snap.docs.first.data()};
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Unlink a 1-to-1 relationship, revoking former caregiver access while preserving patient records
+  Future<void> unlinkPairing({
+    required String pairingId,
+    required String patientUid,
+    required String caregiverUid,
+  }) async {
+    // 1. Delete pairing document
+    if (pairingId.isNotEmpty) {
+      try {
+        await _db.collection('pairings').doc(pairingId).delete();
+      } catch (e) {
+        debugPrint('Notice deleting pairing doc: $e');
+      }
+    }
+
+    // Also delete any other pairing docs linking these two users
+    if (patientUid.isNotEmpty && caregiverUid.isNotEmpty) {
+      try {
+        final q = await _db
+            .collection('pairings')
+            .where('patientUid', isEqualTo: patientUid)
+            .where('caregiverUid', isEqualTo: caregiverUid)
+            .get();
+        for (final doc in q.docs) {
+          await doc.reference.delete();
+        }
+      } catch (_) {}
+    }
+
+    // 2. Clear patient user document and patients collection
+    if (patientUid.isNotEmpty) {
+      try {
+        await _db.collection('users').doc(patientUid).update({
+          'linkedCaregiverUid': FieldValue.delete(),
+          'linkedCaregiverName': FieldValue.delete(),
+          'pairingId': FieldValue.delete(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
+
+      try {
+        await _db.collection('patients').doc(patientUid).update({
+          'caregiverIds': [],
+          'primaryCaregiverUid': FieldValue.delete(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
+    }
+
+    // 3. Clear caregiver user document
+    if (caregiverUid.isNotEmpty) {
+      try {
+        await _db.collection('users').doc(caregiverUid).update({
+          'linkedPatientUid': FieldValue.delete(),
+          'linkedPatientName': FieldValue.delete(),
+          'pairingId': FieldValue.delete(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
+    }
+
+    // 4. Mark pending requests as unlinked
+    if (patientUid.isNotEmpty && caregiverUid.isNotEmpty) {
+      try {
+        final reqs = await _db
+            .collection('pairing_requests')
+            .where('patientUid', isEqualTo: patientUid)
+            .where('caregiverUid', isEqualTo: caregiverUid)
+            .get();
+        for (final r in reqs.docs) {
+          await r.reference.update({
+            'status': 'unlinked',
+            'unlinkedAt': FieldValue.serverTimestamp(),
+          });
+        }
+      } catch (_) {}
+    }
+
+    // 5. Clean up contacts collection for this caregiver
+    if (patientUid.isNotEmpty && caregiverUid.isNotEmpty) {
+      try {
+        final contacts = await _db
+            .collection('contacts')
+            .where('patientUid', isEqualTo: patientUid)
+            .where('caregiverUid', isEqualTo: caregiverUid)
+            .get();
+        for (final c in contacts.docs) {
+          await c.reference.delete();
+        }
+      } catch (_) {}
+    }
+  }
+
+  /// Remove a connected pairing by pairingId (delegates to unlinkPairing)
   Future<void> removePairing(String pairingId) async {
+    try {
+      final doc = await _db.collection('pairings').doc(pairingId).get();
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data()!;
+        final pUid = (data['patientUid'] ?? '').toString();
+        final cUid = (data['caregiverUid'] ?? '').toString();
+        await unlinkPairing(pairingId: pairingId, patientUid: pUid, caregiverUid: cUid);
+        return;
+      }
+    } catch (_) {}
     await _db.collection('pairings').doc(pairingId).delete();
   }
 
