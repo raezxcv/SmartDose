@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
 import '../services/pairing_service.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 
 class ConnectionRequestsScreen extends StatefulWidget {
   const ConnectionRequestsScreen({super.key});
@@ -207,18 +208,10 @@ class _ConnectionRequestsScreenState extends State<ConnectionRequestsScreen> {
                           Row(
                             children: [
                               // Caregiver Profile Photo / Avatar
-                              Container(
-                                width: 52,
-                                height: 52,
-                                decoration: const BoxDecoration(
-                                  color: Color(0xFFECFDF5),
-                                  shape: BoxShape.circle,
-                                ),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  caregiverName.isNotEmpty ? caregiverName[0].toUpperCase() : 'C',
-                                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: emerald),
-                                ),
+                              AppAvatar(
+                                name: caregiverName,
+                                photoUrl: req['caregiverPhoto'],
+                                radius: 26,
                               ),
                               const SizedBox(width: 14),
                               Expanded(

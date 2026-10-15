@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
+import '../services/pairing_service.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 
 class EmergencyContactsScreen extends StatefulWidget {
   final bool isCaregiver;
@@ -14,9 +16,214 @@ class EmergencyContactsScreen extends StatefulWidget {
 }
 
 class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
+  final PairingService _pairingService = PairingService();
+  Stream<List<Map<String, dynamic>>>? _caregiversStream;
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _contactsStream;
+
   String? get _targetUid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
   final _userName =
       FirebaseAuth.instance.currentUser?.displayName ?? 'Patient';
+
+  @override
+  void initState() {
+    super.initState();
+    _initStreams();
+  }
+
+  void _initStreams() {
+    final uid = _targetUid;
+    if (uid != null) {
+      _caregiversStream = _pairingService.getConnectedCaregiversStream(uid);
+    }
+    _contactsStream = FirebaseFirestore.instance.collection('contacts').snapshots();
+  }
+
+  Widget _buildPinnedCaregiverCard(
+    Map<String, dynamic> caregiver,
+    ThemeData theme,
+    bool isDark,
+    Color cardBgColor,
+    Color primaryTextColor,
+    Color secondaryTextColor,
+    Color emerald,
+  ) {
+    final name = caregiver['caregiverName'] as String? ?? 'Caregiver';
+    final email = caregiver['caregiverEmail'] as String? ?? '';
+    final phone = caregiver['caregiverPhone'] as String? ?? caregiver['phone'] as String? ?? '';
+    final relationship = caregiver['relationship'] as String? ?? 'Primary Caregiver';
+    final photo = caregiver['caregiverPhoto'] as String? ?? caregiver['photoUrl'] as String?;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: cardBgColor,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: emerald.withValues(alpha: 0.4),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: emerald.withValues(alpha: isDark ? 0.15 : 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: emerald.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(LucideIcons.shieldCheck, color: emerald, size: 13),
+                    const SizedBox(width: 5),
+                    Text(
+                      'PRIMARY EMERGENCY CAREGIVER',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w800,
+                        color: emerald,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.link_rounded, size: 12, color: Color(0xFF10B981)),
+                    SizedBox(width: 3),
+                    Text(
+                      'Linked',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              AppAvatar(
+                name: name,
+                photoUrl: photo,
+                radius: 26,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: primaryTextColor,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      relationship,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: emerald,
+                      ),
+                    ),
+                    if (phone.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Icon(Icons.phone_outlined, size: 13, color: secondaryTextColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            phone,
+                            style: TextStyle(fontSize: 12, color: secondaryTextColor),
+                          ),
+                        ],
+                      ),
+                    ] else if (email.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Icon(Icons.mail_outline_rounded, size: 13, color: secondaryTextColor),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              email,
+                              style: TextStyle(fontSize: 12, color: secondaryTextColor),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (phone.isNotEmpty)
+                IconButton(
+                  icon: Icon(LucideIcons.send, size: 18, color: emerald),
+                  tooltip: 'Send Test SMS',
+                  onPressed: () => _sendTestSms({
+                    'name': name,
+                    'phone': phone,
+                    'relationship': relationship,
+                  }),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF131D18) : const Color(0xFFF0FDF4),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(LucideIcons.info, size: 14, color: emerald.withValues(alpha: 0.8)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Automatically notified via SIM800L SMS during missed doses & emergencies.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF065F46),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _showAddContactDialog({Map<String, dynamic>? existingContact}) async {
     final uid = _targetUid;
@@ -544,314 +751,363 @@ class _EmergencyContactsScreenState extends State<EmergencyContactsScreen> {
             ),
             const SizedBox(height: 14),
 
-            // Contacts Stream
-            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('contacts')
-                  .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Padding(
-                    padding: EdgeInsets.all(32),
-                    child: Center(
-                      child: CircularProgressIndicator(color: emerald),
-                    ),
-                  );
-                }
-
-                final allDocs = snapshot.data?.docs ?? [];
-                final targetUid = _targetUid;
-                final docs = allDocs.where((doc) {
-                  final data = doc.data();
-                  final pUid = (data['patientUid'] ?? data['patientId'] ?? '').toString();
-                  if (targetUid == null) return false;
-                  return pUid == targetUid;
-                }).toList();
-
-                if (docs.isEmpty) {
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(28),
-                    decoration: BoxDecoration(
-                      color: cardBgColor,
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black
-                              .withValues(alpha: isDark ? 0.2 : 0.03),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          width: 56,
-                          height: 56,
-                          decoration: BoxDecoration(
-                            color: isDark
-                                ? const Color(0xFF1E2D25)
-                                : const Color(0xFFE8F8F0),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(LucideIcons.usersRound,
-                              color: emerald, size: 28),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No Emergency Contacts Yet',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: primaryTextColor,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          'Add trusted caregivers or family members to receive direct SMS alerts from your SmartDose dispenser.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: secondaryTextColor,
-                            height: 1.4,
-                          ),
-                        ),
-                        const SizedBox(height: 20),
-                        if (widget.isCaregiver)
-                          GestureDetector(
-                            onTap: () => _showAddContactDialog(),
-                            child: Container(
-                              width: double.infinity,
-                              height: 50,
-                              decoration: BoxDecoration(
-                                gradient: const LinearGradient(
-                                  colors: [Color(0xFF00A36C), Color(0xFF00C882)],
-                                ),
-                                borderRadius: BorderRadius.circular(25),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: emerald.withValues(alpha: 0.35),
-                                    blurRadius: 12,
-                                    offset: const Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              child: const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.add_rounded,
-                                      color: Colors.white, size: 22),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Add Emergency Contact',
-                                    style: TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                        else
-                          Text(
-                            'Emergency contacts are managed by your caregiver.',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: secondaryTextColor,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                      ],
-                    ),
-                  );
-                }
+            // Linked Caregiver + Contacts
+            StreamBuilder<List<Map<String, dynamic>>>(
+              stream: _caregiversStream,
+              builder: (context, caregiverSnap) {
+                final caregivers = caregiverSnap.data ?? [];
+                final primaryCaregiver = caregivers.isNotEmpty ? caregivers.first : null;
 
                 return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    ...docs.map((doc) {
-                      final data = doc.data();
-                      final id = doc.id;
-                      final name = data['name'] as String? ?? 'Contact';
-                      final phone = data['phone'] as String? ?? '';
-                      final relationship =
-                          data['relationship'] as String? ?? 'Caregiver';
+                    if (primaryCaregiver != null)
+                      _buildPinnedCaregiverCard(
+                        primaryCaregiver,
+                        theme,
+                        isDark,
+                        cardBgColor,
+                        primaryTextColor,
+                        secondaryTextColor,
+                        emerald,
+                      ),
 
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 14),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: cardBgColor,
-                          borderRadius: BorderRadius.circular(24),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black
-                                  .withValues(alpha: isDark ? 0.2 : 0.03),
-                              blurRadius: 12,
-                              offset: const Offset(0, 4),
+                    // Custom Contacts Stream
+                    StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: _contactsStream,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.waiting && primaryCaregiver == null) {
+                          return const Padding(
+                            padding: EdgeInsets.all(32),
+                            child: Center(
+                              child: CircularProgressIndicator(color: emerald),
                             ),
-                          ],
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 48,
-                              height: 48,
+                          );
+                        }
+
+                        final allDocs = snapshot.data?.docs ?? [];
+                        final targetUid = _targetUid;
+                        final docs = allDocs.where((doc) {
+                          final data = doc.data();
+                          final pUid = (data['patientUid'] ?? data['patientId'] ?? '').toString();
+                          if (targetUid == null) return false;
+                          return pUid == targetUid;
+                        }).toList();
+
+                        if (docs.isEmpty) {
+                          if (primaryCaregiver != null) {
+                            return Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(20),
                               decoration: BoxDecoration(
-                                color: isDark
-                                    ? const Color(0xFF1E2D25)
-                                    : const Color(0xFFE8F8F0),
-                                shape: BoxShape.circle,
+                                color: cardBgColor,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: isDark ? const Color(0xFF27272A) : const Color(0xFFE2E8F0),
+                                ),
                               ),
-                              child: const Icon(LucideIcons.userCheck,
-                                  color: emerald, size: 22),
-                            ),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                              child: Row(
                                 children: [
-                                  Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          name,
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.bold,
-                                            color: primaryTextColor,
-                                          ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
+                                  Icon(LucideIcons.users, size: 20, color: secondaryTextColor),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      'No additional emergency contacts added yet.',
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: secondaryTextColor,
                                       ),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 8, vertical: 2),
-                                        decoration: BoxDecoration(
-                                          color: emerald.withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                  if (widget.isCaregiver)
+                                    TextButton(
+                                      onPressed: () => _showAddContactDialog(),
+                                      child: const Text('Add', style: TextStyle(fontWeight: FontWeight.bold, color: emerald)),
+                                    ),
+                                ],
+                              ),
+                            );
+                          }
+
+                          return Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(28),
+                            decoration: BoxDecoration(
+                              color: cardBgColor,
+                              borderRadius: BorderRadius.circular(24),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black
+                                      .withValues(alpha: isDark ? 0.2 : 0.03),
+                                  blurRadius: 12,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: Column(
+                              children: [
+                                Container(
+                                  width: 56,
+                                  height: 56,
+                                  decoration: BoxDecoration(
+                                    color: isDark
+                                        ? const Color(0xFF1E2D25)
+                                        : const Color(0xFFE8F8F0),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(LucideIcons.usersRound,
+                                      color: emerald, size: 28),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  'No Emergency Contacts Yet',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: primaryTextColor,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  'Add trusted caregivers or family members to receive direct SMS alerts from your SmartDose dispenser.',
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: secondaryTextColor,
+                                    height: 1.4,
+                                  ),
+                                ),
+                                const SizedBox(height: 20),
+                                if (widget.isCaregiver)
+                                  GestureDetector(
+                                    onTap: () => _showAddContactDialog(),
+                                    child: Container(
+                                      width: double.infinity,
+                                      height: 50,
+                                      decoration: BoxDecoration(
+                                        gradient: const LinearGradient(
+                                          colors: [Color(0xFF00A36C), Color(0xFF00C882)],
                                         ),
-                                        child: Text(
-                                          relationship,
-                                          style: const TextStyle(
-                                            fontSize: 11,
-                                            fontWeight: FontWeight.bold,
-                                            color: emerald,
+                                        borderRadius: BorderRadius.circular(25),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: emerald.withValues(alpha: 0.35),
+                                            blurRadius: 12,
+                                            offset: const Offset(0, 4),
                                           ),
-                                        ),
+                                        ],
+                                      ),
+                                      child: const Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(Icons.add_rounded,
+                                              color: Colors.white, size: 22),
+                                          SizedBox(width: 8),
+                                          Text(
+                                            'Add Emergency Contact',
+                                            style: TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  Text(
+                                    'Emergency contacts are managed by your caregiver.',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: secondaryTextColor,
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        }
+
+                        return Column(
+                          children: [
+                            ...docs.map((doc) {
+                              final data = doc.data();
+                              final id = doc.id;
+                              final name = data['name'] as String? ?? 'Contact';
+                              final phone = data['phone'] as String? ?? '';
+                              final relationship =
+                                  data['relationship'] as String? ?? 'Caregiver';
+
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 14),
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: cardBgColor,
+                                  borderRadius: BorderRadius.circular(24),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black
+                                          .withValues(alpha: isDark ? 0.2 : 0.03),
+                                      blurRadius: 12,
+                                      offset: const Offset(0, 4),
+                                    ),
+                                  ],
+                                ),
+                                child: Row(
+                                  children: [
+                                    AppAvatar(
+                                      name: name,
+                                      radius: 24,
+                                    ),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  name,
+                                                  style: TextStyle(
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: primaryTextColor,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(
+                                                    horizontal: 8, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: emerald.withValues(alpha: 0.12),
+                                                  borderRadius: BorderRadius.circular(10),
+                                                ),
+                                                child: Text(
+                                                  relationship,
+                                                  style: const TextStyle(
+                                                    fontSize: 11,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: emerald,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              Icon(Icons.phone_outlined,
+                                                  size: 14, color: secondaryTextColor),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                phone,
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  color: secondaryTextColor,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    // Test SMS action
+                                    IconButton(
+                                      icon: const Icon(LucideIcons.send,
+                                          size: 18, color: emerald),
+                                      tooltip: 'Send Test SMS',
+                                      onPressed: () => _sendTestSms({...data, 'id': id}),
+                                    ),
+                                    if (widget.isCaregiver)
+                                      PopupMenuButton<String>(
+                                        icon: Icon(Icons.more_vert_rounded,
+                                            color: secondaryTextColor, size: 20),
+                                        onSelected: (val) {
+                                          if (val == 'edit') {
+                                            _showAddContactDialog(
+                                                existingContact: {...data, 'id': id});
+                                          } else if (val == 'delete') {
+                                            _deleteContact(id);
+                                          }
+                                        },
+                                        itemBuilder: (ctx) => [
+                                          const PopupMenuItem(
+                                            value: 'edit',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.edit_outlined, size: 18),
+                                                SizedBox(width: 10),
+                                                Text('Edit Contact'),
+                                              ],
+                                            ),
+                                          ),
+                                          const PopupMenuItem(
+                                            value: 'delete',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.delete_outline_rounded,
+                                                    size: 18, color: Colors.red),
+                                                SizedBox(width: 10),
+                                                Text('Remove Contact',
+                                                    style: TextStyle(color: Colors.red)),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                  ],
+                                ),
+                              );
+                            }),
+                            if (docs.isNotEmpty && widget.isCaregiver) ...[
+                              const SizedBox(height: 10),
+                              GestureDetector(
+                                onTap: () => _showAddContactDialog(),
+                                child: Container(
+                                  width: double.infinity,
+                                  height: 54,
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      colors: [Color(0xFF00A36C), Color(0xFF00C882)],
+                                    ),
+                                    borderRadius: BorderRadius.circular(27),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: emerald.withValues(alpha: 0.35),
+                                        blurRadius: 14,
+                                        offset: const Offset(0, 5),
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 4),
-                                  Row(
+                                  child: const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
                                     children: [
-                                      Icon(Icons.phone_outlined,
-                                          size: 14, color: secondaryTextColor),
-                                      const SizedBox(width: 4),
+                                      Icon(Icons.add_rounded,
+                                          color: Colors.white, size: 22),
+                                      SizedBox(width: 8),
                                       Text(
-                                        phone,
+                                        'Add Emergency Contact',
                                         style: TextStyle(
-                                          fontSize: 13,
-                                          color: secondaryTextColor,
-                                          fontWeight: FontWeight.w500,
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
                                         ),
                                       ),
                                     ],
                                   ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            // Test SMS action
-                            IconButton(
-                              icon: const Icon(LucideIcons.send,
-                                  size: 18, color: emerald),
-                              tooltip: 'Send Test SMS',
-                              onPressed: () => _sendTestSms({...data, 'id': id}),
-                            ),
-                            if (widget.isCaregiver)
-                              PopupMenuButton<String>(
-                                icon: Icon(Icons.more_vert_rounded,
-                                    color: secondaryTextColor, size: 20),
-                                onSelected: (val) {
-                                  if (val == 'edit') {
-                                    _showAddContactDialog(
-                                        existingContact: {...data, 'id': id});
-                                  } else if (val == 'delete') {
-                                    _deleteContact(id);
-                                  }
-                                },
-                                itemBuilder: (ctx) => [
-                                  const PopupMenuItem(
-                                    value: 'edit',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.edit_outlined, size: 18),
-                                        SizedBox(width: 10),
-                                        Text('Edit Contact'),
-                                      ],
-                                    ),
-                                  ),
-                                  const PopupMenuItem(
-                                    value: 'delete',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.delete_outline_rounded,
-                                            size: 18, color: Colors.red),
-                                        SizedBox(width: 10),
-                                        Text('Remove Contact',
-                                            style: TextStyle(color: Colors.red)),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                          ],
-                        ),
-                      );
-                    }),
-                    if (docs.isNotEmpty) ...[
-                      const SizedBox(height: 10),
-                      GestureDetector(
-                        onTap: () => _showAddContactDialog(),
-                        child: Container(
-                          width: double.infinity,
-                          height: 54,
-                          decoration: BoxDecoration(
-                            gradient: const LinearGradient(
-                              colors: [Color(0xFF00A36C), Color(0xFF00C882)],
-                            ),
-                            borderRadius: BorderRadius.circular(27),
-                            boxShadow: [
-                              BoxShadow(
-                                color: emerald.withValues(alpha: 0.35),
-                                blurRadius: 14,
-                                offset: const Offset(0, 5),
-                              ),
-                            ],
-                          ),
-                          child: const Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.add_rounded,
-                                  color: Colors.white, size: 22),
-                              SizedBox(width: 8),
-                              Text(
-                                'Add Emergency Contact',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
                                 ),
                               ),
                             ],
-                          ),
-                        ),
-                      ),
-                    ],
+                          ],
+                        );
+                      },
+                    ),
                   ],
                 );
               },

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -11,7 +10,9 @@ import 'camera_feed_screen.dart';
 import 'device_connected_screen.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 import '../../pairing/screens/emergency_contacts_screen.dart';
+import '../../pairing/screens/pair_caregiver_screen.dart';
 
 class PatientHomeTab extends StatefulWidget {
   final String displayName;
@@ -788,20 +789,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
     );
   }
 
-  static String _getInitials(String name) {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return 'SD';
-    final parts =
-        trimmed.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
-    if (parts.length >= 2) {
-      return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
-    } else if (parts.isNotEmpty && parts.first.isNotEmpty) {
-      return parts.first.length >= 2
-          ? parts.first.substring(0, 2).toUpperCase()
-          : parts.first[0].toUpperCase();
-    }
-    return 'SD';
-  }
+
 
   static const List<List<Color>> _avatarGradients = [
     [Color(0xFF00C882), Color(0xFF00A36C)], // Emerald Mint
@@ -812,81 +800,7 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
     [Color(0xFF475569), Color(0xFF1E293B)], // Midnight Slate
   ];
 
-  Widget _buildAvatarImage(String photoVal, String initials, double size) {
-    final trimmed = photoVal.trim();
-    if (trimmed.isEmpty) {
-      return Center(
-        child: Text(
-          initials,
-          style: TextStyle(
-              color: Colors.white,
-              fontSize: size * 0.38,
-              fontWeight: FontWeight.w900),
-        ),
-      );
-    }
-    if (trimmed.startsWith('data:image')) {
-      try {
-        final base64Str =
-            trimmed.contains(',') ? trimmed.split(',').last : trimmed;
-        final bytes = base64Decode(base64Str);
-        return Image.memory(
-          bytes,
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-          gaplessPlayback: true,
-          errorBuilder: (_, __, ___) => Center(
-            child: Text(initials,
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: size * 0.38,
-                    fontWeight: FontWeight.w900)),
-          ),
-        );
-      } catch (_) {}
-    }
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-      return Image.network(
-        trimmed,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => Center(
-          child: Text(initials,
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: size * 0.38,
-                  fontWeight: FontWeight.w900)),
-        ),
-      );
-    }
-    final file = File(trimmed);
-    if (file.existsSync()) {
-      return Image.file(
-        file,
-        width: size,
-        height: size,
-        fit: BoxFit.cover,
-        gaplessPlayback: true,
-        errorBuilder: (_, __, ___) => Center(
-          child: Text(initials,
-              style: TextStyle(
-                  color: Colors.white,
-                  fontSize: size * 0.38,
-                  fontWeight: FontWeight.w900)),
-        ),
-      );
-    }
-    return Center(
-      child: Text(initials,
-          style: TextStyle(
-              color: Colors.white,
-              fontSize: size * 0.38,
-              fontWeight: FontWeight.w900)),
-    );
-  }
+
 
   String _cachedHeaderPhotoUrl = '';
   String _cachedHeaderName = '';
@@ -920,8 +834,6 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
         final photoUrl = _cachedHeaderPhotoUrl.isNotEmpty
             ? _cachedHeaderPhotoUrl
             : (FirebaseAuth.instance.currentUser?.photoURL ?? '');
-        final initials = _getInitials(name);
-        final activeGradient = _avatarGradients[_cachedAvatarGradIdx];
 
         return Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1009,26 +921,12 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
                 const SizedBox(width: 10),
                 GestureDetector(
                   onTap: widget.onGoToProfile,
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(colors: activeGradient),
-                      border:
-                          Border.all(color: activeGradient.last, width: 1.5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: activeGradient.last.withValues(alpha: 0.3),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(22),
-                      child: _buildAvatarImage(photoUrl, initials, 44),
-                    ),
+                  child: AppAvatar(
+                    name: name,
+                    imageUrl: photoUrl,
+                    size: 44,
+                    gradientIndex: _cachedAvatarGradIdx,
+                    showGradientBorder: true,
                   ),
                 ),
               ],
@@ -1213,40 +1111,74 @@ class _PatientHomeTabState extends State<PatientHomeTab> {
                 ),
               ),
             ),
-          ] else ...[
-            // Empty state CTA — single button
+            // Empty state CTA
             const SizedBox(height: 20),
-            GestureDetector(
-              onTap: widget.onGoToMeds,
-              child: Container(
-                width: double.infinity,
-                height: 50,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(25),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      widget.isCaregiver
-                          ? Icons.add_circle_rounded
-                          : Icons.calendar_month_rounded,
-                      color: const Color(0xFF00A36C),
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      widget.isCaregiver ? 'Add Medication' : 'View Schedule',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF00A36C),
+            Row(
+              children: [
+                if (!widget.isCaregiver) ...[
+                  Expanded(
+                    child: SizedBox(
+                      height: 50,
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF00A36C),
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(25),
+                          ),
+                        ),
+                        onPressed: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const PairCaregiverScreen(),
+                            ),
+                          );
+                        },
+                        icon: const Icon(LucideIcons.qrCode, size: 18),
+                        label: const Text(
+                          'Pair Caregiver',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
-                  ],
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                Expanded(
+                  child: SizedBox(
+                    height: 50,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.isCaregiver ? Colors.white : Colors.white.withValues(alpha: 0.25),
+                        foregroundColor: widget.isCaregiver ? const Color(0xFF00A36C) : Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(25),
+                        ),
+                      ),
+                      onPressed: widget.onGoToMeds,
+                      icon: Icon(
+                        widget.isCaregiver
+                            ? Icons.add_circle_rounded
+                            : Icons.calendar_month_rounded,
+                        size: 18,
+                      ),
+                      label: Text(
+                        widget.isCaregiver ? 'Add Medication' : 'View Schedule',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
           ],
         ],

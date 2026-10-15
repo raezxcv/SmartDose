@@ -31,6 +31,7 @@ class MjpegStreamView extends StatefulWidget {
   final bool isOnline;
   final BoxFit fit;
   final bool showLiveBadge;
+  final VoidCallback? onRetry;
 
   const MjpegStreamView({
     super.key,
@@ -38,6 +39,7 @@ class MjpegStreamView extends StatefulWidget {
     required this.isOnline,
     this.fit = BoxFit.cover,
     this.showLiveBadge = true,
+    this.onRetry,
   });
 
   @override
@@ -280,6 +282,7 @@ class _MjpegStreamViewState extends State<MjpegStreamView>
         key: const ValueKey('offline'),
         isOnline: false,
         isDark: isDark,
+        onRetry: widget.onRetry ?? _startStream,
       );
     }
 
@@ -297,11 +300,13 @@ class _MjpegStreamViewState extends State<MjpegStreamView>
       _StreamState.error => _ErrorView(
         key: const ValueKey('error'),
         isDark: isDark,
+        onRetry: widget.onRetry ?? _startStream,
       ),
       _ => _Placeholder(
         key: const ValueKey('placeholder'),
         isOnline: widget.isOnline,
         isDark: isDark,
+        onRetry: widget.onRetry ?? _startStream,
       ),
     };
   }
@@ -411,7 +416,8 @@ class _ConnectingView extends StatelessWidget {
 
 class _ErrorView extends StatelessWidget {
   final bool isDark;
-  const _ErrorView({super.key, required this.isDark});
+  final VoidCallback onRetry;
+  const _ErrorView({super.key, required this.isDark, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -450,6 +456,19 @@ class _ErrorView extends StatelessWidget {
               fontSize: 11,
             ),
           ),
+          const SizedBox(height: 12),
+          TextButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(LucideIcons.refreshCw, size: 14, color: Color(0xFF00A36C)),
+            label: Text(
+              'Retry Now',
+              style: GoogleFonts.plusJakartaSans(
+                color: const Color(0xFF00A36C),
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -459,7 +478,8 @@ class _ErrorView extends StatelessWidget {
 class _Placeholder extends StatelessWidget {
   final bool isOnline;
   final bool isDark;
-  const _Placeholder({super.key, required this.isOnline, required this.isDark});
+  final VoidCallback onRetry;
+  const _Placeholder({super.key, required this.isOnline, required this.isDark, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -551,6 +571,21 @@ class _Placeholder extends StatelessWidget {
               ),
             ),
           ),
+          if (isOnline) ...[
+            const SizedBox(height: 10),
+            TextButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(LucideIcons.refreshCw, size: 14, color: Color(0xFF00A36C)),
+              label: Text(
+                'Reconnect Stream',
+                style: GoogleFonts.plusJakartaSans(
+                  color: const Color(0xFF00A36C),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

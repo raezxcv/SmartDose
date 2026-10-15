@@ -28,8 +28,11 @@ class PatientMedsTab extends StatefulWidget {
 class _PatientMedsTabState extends State<PatientMedsTab> {
   int _selectedDateIndex = 0;
   late List<DateTime> _weekDays;
-  Timer? _countdownTimer;
   late String _selectedSection;
+
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _schedulesStream;
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _compartmentsStream;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _latestCompartmentDocs = [];
 
   String? get _uid => widget.patientUid ?? FirebaseAuth.instance.currentUser?.uid;
 
@@ -38,19 +41,36 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     super.initState();
     _selectedSection = widget.initialSection;
     _generateWeekDays();
-    _startTimer();
-  }
-
-  void _startTimer() {
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
+    _initStreams();
   }
 
   @override
-  void dispose() {
-    _countdownTimer?.cancel();
-    super.dispose();
+  void didUpdateWidget(PatientMedsTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.patientUid != widget.patientUid) {
+      _initStreams();
+    }
+    if (oldWidget.initialSection != widget.initialSection) {
+      setState(() => _selectedSection = widget.initialSection);
+    }
+  }
+
+  void _initStreams() {
+    final uid = _uid;
+    if (uid != null && uid.isNotEmpty) {
+      _schedulesStream = FirebaseFirestore.instance
+          .collection('schedules')
+          .where('patientUid', isEqualTo: uid)
+          .snapshots();
+
+      _compartmentsStream = FirebaseFirestore.instance
+          .collection('compartments')
+          .where('patientUid', isEqualTo: uid)
+          .snapshots();
+    } else {
+      _schedulesStream = null;
+      _compartmentsStream = null;
+    }
   }
 
   void _generateWeekDays() {
@@ -64,36 +84,73 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
 
   DateTime get _selectedDate => _weekDays[_selectedDateIndex];
 
-  Stream<QuerySnapshot<Map<String, dynamic>>>? get _schedulesStream {
-    final uid = _uid;
-    if (uid == null) return null;
-    return FirebaseFirestore.instance
-        .collection('schedules')
-        .where('patientUid', isEqualTo: uid)
-        .snapshots();
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Medication Schedule Setup (Workflow Step 2: From Configured Inventory)
+  // ─────────────────────────────────────────────────────────────────────────
 
   void _showMedicationSheet({DocumentSnapshot<Map<String, dynamic>>? editDoc}) {
     final isEditing = editDoc != null;
     final editData = editDoc?.data();
 
-    final nameCtrl = TextEditingController(text: editData?['medicationName'] ?? '');
+    // Filter only occupied/configured compartments from Pill Inventory
+    final availableComps = _latestCompartmentDocs.where((doc) {
+      final name = (doc.data()['medicationName'] as String? ?? '').trim();
+      return name.isNotEmpty;
+    }).toList();
 
-    String initialDosageNum = '';
-    String selectedUnit = 'mg';
-    if (isEditing && editData?['dosage'] != null) {
-      final rawDosage = (editData!['dosage'] as String).trim();
-      final parts = rawDosage.split(' ');
-      if (parts.length >= 2) {
-        initialDosageNum = parts.first;
-        selectedUnit = parts.sublist(1).join(' ');
-      } else {
-        initialDosageNum = rawDosage;
-      }
+    if (availableComps.isEmpty) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: const Row(
+            children: [
+              Icon(Icons.inventory_2_outlined, color: Color(0xFFF59E0B)),
+              SizedBox(width: 10),
+              Text('Inventory Setup Needed'),
+            ],
+          ),
+          content: const Text(
+            'Before creating a medication schedule, please configure at least one compartment in the Pill Inventory first. Each schedule links directly to an active compartment.',
+            style: TextStyle(fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00A36C),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              onPressed: () {
+                Navigator.pop(ctx);
+                setState(() => _selectedSection = 'inventory');
+              },
+              child: const Text('Go to Pill Inventory', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      );
+      return;
     }
-    final dosageCtrl = TextEditingController(text: initialDosageNum);
 
-    String selectedComp = editData?['compartment'] ?? 'Compartment 1';
+    // Determine initial selection
+    QueryDocumentSnapshot<Map<String, dynamic>> selectedCompDoc = availableComps.first;
+    if (isEditing && editData?['compCode'] != null) {
+      final existingCode = editData!['compCode'] as String;
+      final match = availableComps.where((c) {
+        final cNum = c.data()['compartmentNumber'] ?? c.id.replaceAll(RegExp(r'\D'), '');
+        return 'C$cNum' == existingCode || c.data()['compCode'] == existingCode;
+      }).firstOrNull;
+      if (match != null) selectedCompDoc = match;
+    }
+
+    String selectedCompCode = 'C${selectedCompDoc.data()['compartmentNumber'] ?? selectedCompDoc.id.replaceAll(RegExp(r'\D'), '')}';
+    String medName = selectedCompDoc.data()['medicationName'] ?? '';
+    String dosage = selectedCompDoc.data()['dosage'] ?? '1 tablet';
+
     TimeOfDay selectedTime = TimeOfDay(
       hour: editData?['scheduledTime'] != null
           ? (editData!['scheduledTime'] as Timestamp).toDate().hour
@@ -106,11 +163,8 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
 
     final cardBgColor = Theme.of(context).colorScheme.surface;
     final primaryTextColor = Theme.of(context).colorScheme.onSurface;
-
-    const availableUnits = ['tablet', 'pill', 'mg', 'ml', 'capsule', 'drop', 'g'];
+    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
     bool isSaving = false;
-    String? nameError;
-    String? dosageError;
 
     showModalBottomSheet(
       context: context,
@@ -132,176 +186,156 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      isEditing ? 'Edit Medication' : 'Add Medication',
+                      isEditing ? 'Edit Schedule' : 'Schedule Medication',
                       style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: primaryTextColor),
                     ),
-                    Row(
-                      children: [
-                        if (isEditing)
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444)),
-                            tooltip: 'Delete Medication',
-                            onPressed: () async {
-                              final confirm = await showDialog<bool>(
-                                context: ctx,
-                                builder: (dialogCtx) => AlertDialog(
-                                  title: const Text('Delete Medication?'),
-                                  content: Text('Are you sure you want to delete ${nameCtrl.text}? This action cannot be undone.'),
-                                  actions: [
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(dialogCtx, false),
-                                      child: const Text('Cancel'),
-                                    ),
-                                    TextButton(
-                                      onPressed: () => Navigator.pop(dialogCtx, true),
-                                      child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
-                                    ),
-                                  ],
+                    if (isEditing)
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444)),
+                        tooltip: 'Delete Schedule',
+                        onPressed: () async {
+                          final confirm = await showDialog<bool>(
+                            context: ctx,
+                            builder: (dialogCtx) => AlertDialog(
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                              title: const Text('Delete Schedule?'),
+                              content: Text('Remove $medName from this schedule?'),
+                              actions: [
+                                TextButton(onPressed: () => Navigator.pop(dialogCtx, false), child: const Text('Cancel')),
+                                ElevatedButton(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+                                  onPressed: () => Navigator.pop(dialogCtx, true),
+                                  child: const Text('Delete', style: TextStyle(color: Colors.white)),
                                 ),
-                              );
-                              if (confirm == true) {
-                                final medName = nameCtrl.text.trim();
-                                await editDoc.reference.delete();
-                                if (mounted) {
-                                  Navigator.pop(ctx);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text('$medName deleted!'),
-                                      backgroundColor: const Color(0xFFEF4444),
-                                      behavior: SnackBarBehavior.floating,
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                    ),
-                                  );
-                                }
-                              }
-                            },
-                          ),
-                        IconButton(
-                          icon: Icon(Icons.close_rounded, color: primaryTextColor.withValues(alpha: 0.6)),
-                          onPressed: () => Navigator.pop(ctx),
-                        ),
-                      ],
-                    ),
+                              ],
+                            ),
+                          );
+                          if (confirm == true) {
+                            await editDoc.reference.delete();
+                            if (ctx.mounted) Navigator.pop(ctx);
+                          }
+                        },
+                      )
+                    else
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: nameCtrl,
-                  style: TextStyle(color: primaryTextColor),
-                  onChanged: (_) {
-                    if (nameError != null) {
-                      setSheetState(() => nameError = null);
-                    }
-                  },
+                const SizedBox(height: 8),
+                Text(
+                  'Schedules reference configured medications directly from your Pill Inventory.',
+                  style: TextStyle(fontSize: 13, color: secondaryTextColor),
+                ),
+                const SizedBox(height: 20),
+
+                // Compartment Selection Dropdown (Only occupied compartments selectable)
+                Text('Select Compartment', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: secondaryTextColor)),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  value: selectedCompCode,
+                  dropdownColor: cardBgColor,
+                  style: TextStyle(color: primaryTextColor, fontSize: 15),
                   decoration: InputDecoration(
-                    labelText: 'Medication Name',
-                    hintText: 'e.g. Metformin',
-                    errorText: nameError,
-                    prefixIcon: const Icon(Icons.medication_outlined, color: Color(0xFF00A36C)),
+                    prefixIcon: const Icon(LucideIcons.boxes, color: Color(0xFF00A36C)),
                     border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                   ),
+                  items: availableComps.map((c) {
+                    final cData = c.data();
+                    final cNum = cData['compartmentNumber'] ?? c.id.replaceAll(RegExp(r'\D'), '');
+                    final code = 'C$cNum';
+                    final name = cData['medicationName'] ?? 'Medication';
+                    final dose = cData['dosage'] ?? '';
+                    final label = '$code: $name${dose.isNotEmpty ? ' ($dose)' : ''}';
+                    return DropdownMenuItem<String>(
+                      value: code,
+                      child: Text(label, style: TextStyle(color: primaryTextColor, fontWeight: FontWeight.w600)),
+                    );
+                  }).toList(),
+                  onChanged: (val) {
+                    if (val != null) {
+                      setSheetState(() {
+                        selectedCompCode = val;
+                        final match = availableComps.firstWhere(
+                          (c) => 'C${c.data()['compartmentNumber'] ?? c.id.replaceAll(RegExp(r'\D'), '')}' == val,
+                        );
+                        selectedCompDoc = match;
+                        medName = match.data()['medicationName'] ?? '';
+                        dosage = match.data()['dosage'] ?? '1 tablet';
+                      });
+                    }
+                  },
                 ),
-                const SizedBox(height: 14),
 
-                // Unified Single Input Box for Dosage & Unit
-                InputDecorator(
-                  decoration: InputDecoration(
-                    labelText: 'Dosage',
-                    errorText: dosageError,
-                    prefixIcon: const Icon(Icons.fitness_center_rounded, color: Color(0xFF00A36C)),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                const SizedBox(height: 16),
+
+                // Auto-populated Medication Details Card
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00A36C).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: const Color(0xFF00A36C).withValues(alpha: 0.2)),
                   ),
                   child: Row(
                     children: [
-                      Expanded(
-                        child: TextField(
-                          controller: dosageCtrl,
-                          keyboardType: TextInputType.number,
-                          style: TextStyle(color: primaryTextColor, fontSize: 16),
-                          onChanged: (_) {
-                            if (dosageError != null) {
-                              setSheetState(() => dosageError = null);
-                            }
-                          },
-                          decoration: const InputDecoration(
-                            hintText: 'e.g. 500',
-                            border: InputBorder.none,
-                            enabledBorder: InputBorder.none,
-                            focusedBorder: InputBorder.none,
-                            isDense: true,
-                            contentPadding: EdgeInsets.symmetric(vertical: 8),
-                          ),
-                        ),
-                      ),
                       Container(
-                        height: 22,
-                        width: 1,
-                        color: Theme.of(context).dividerColor,
-                        margin: const EdgeInsets.symmetric(horizontal: 8),
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00A36C).withValues(alpha: 0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(LucideIcons.pill, color: Color(0xFF00A36C), size: 22),
                       ),
-                      DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          value: availableUnits.contains(selectedUnit) ? selectedUnit : 'mg',
-                          dropdownColor: cardBgColor,
-                          isDense: true,
-                          style: TextStyle(color: primaryTextColor, fontWeight: FontWeight.bold, fontSize: 15),
-                          icon: Icon(Icons.arrow_drop_down_rounded, color: primaryTextColor.withValues(alpha: 0.7)),
-                          items: availableUnits
-                              .map((u) => DropdownMenuItem(
-                                    value: u,
-                                    child: Text(u, style: TextStyle(color: primaryTextColor)),
-                                  ))
-                              .toList(),
-                          onChanged: (val) => setSheetState(() => selectedUnit = val!),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              medName,
+                              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: primaryTextColor),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Dosage: $dosage · Slot $selectedCompCode',
+                              style: const TextStyle(fontSize: 13, color: Color(0xFF00A36C), fontWeight: FontWeight.w600),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
 
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: selectedComp,
-                        dropdownColor: cardBgColor,
-                        style: TextStyle(color: primaryTextColor),
-                        decoration: InputDecoration(
-                          labelText: 'Compartment',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-                        ),
-                        items: List.generate(10, (i) => 'Compartment ${i + 1}')
-                            .map((c) => DropdownMenuItem(
-                                  value: c,
-                                  child: Text('Comp ${c.split(' ').last}', style: TextStyle(color: primaryTextColor)),
-                                ))
-                            .toList(),
-                        onChanged: (val) => setSheetState(() => selectedComp = val!),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: selectedFreq,
-                        dropdownColor: cardBgColor,
-                        style: TextStyle(color: primaryTextColor),
-                        decoration: InputDecoration(
-                          labelText: 'Frequency',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: 'Daily', child: Text('Daily')),
-                          DropdownMenuItem(value: 'Once', child: Text('Once')),
-                          DropdownMenuItem(value: 'Weekly', child: Text('Weekly')),
-                        ],
-                        onChanged: (val) => setSheetState(() => selectedFreq = val!),
-                      ),
-                    ),
+                const SizedBox(height: 16),
+
+                // Frequency selection
+                Text('Administration Frequency', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: secondaryTextColor)),
+                const SizedBox(height: 6),
+                DropdownButtonFormField<String>(
+                  value: selectedFreq,
+                  dropdownColor: cardBgColor,
+                  style: TextStyle(color: primaryTextColor),
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(LucideIcons.repeat, color: Color(0xFF00A36C)),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'Daily', child: Text('Daily')),
+                    DropdownMenuItem(value: 'Weekly', child: Text('Weekly')),
+                    DropdownMenuItem(value: 'Once', child: Text('Once')),
                   ],
+                  onChanged: (val) => setSheetState(() => selectedFreq = val!),
                 ),
-                const SizedBox(height: 14),
+
+                const SizedBox(height: 16),
+
+                // Scheduled Time Picker
+                Text('Scheduled Time', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: secondaryTextColor)),
+                const SizedBox(height: 6),
                 InkWell(
                   onTap: () async {
                     final picked = await showTimePicker(
@@ -325,58 +359,79 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                             const Icon(Icons.access_time_rounded, color: Color(0xFF00A36C)),
                             const SizedBox(width: 12),
                             Text(
-                              'Scheduled: ${selectedTime.format(ctx)}',
+                              'Time: ${selectedTime.format(ctx)}',
                               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: primaryTextColor),
                             ),
                           ],
                         ),
-                        Icon(Icons.arrow_drop_down_rounded, color: primaryTextColor.withValues(alpha: 0.6)),
+                        Icon(Icons.arrow_drop_down_rounded, color: secondaryTextColor),
                       ],
                     ),
                   ),
                 ),
+
                 const SizedBox(height: 24),
+
+                // Confirm and Save Button
                 SizedBox(
                   width: double.infinity,
                   height: 52,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00A36C),
-                      disabledBackgroundColor: const Color(0xFF00A36C),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
                       elevation: 0,
                     ),
                     onPressed: isSaving ? null : () async {
-                      final name = nameCtrl.text.trim();
-                      final rawNum = dosageCtrl.text.trim();
                       final uid = _uid;
+                      if (uid == null) return;
 
-                      final hasNameErr = name.isEmpty;
-                      final hasDosageErr = rawNum.isEmpty;
-
-                      if (hasNameErr || hasDosageErr) {
-                        setSheetState(() {
-                          nameError = hasNameErr ? 'Medication name is required' : null;
-                          dosageError = hasDosageErr ? 'Dosage quantity is required' : null;
-                        });
-                        return;
-                      }
-
-                      final dosageStr = '$rawNum $selectedUnit';
-
-                      if (uid == null) {
-                        ScaffoldMessenger.of(ctx).showSnackBar(
-                          const SnackBar(
-                            content: Text('User session expired. Please sign in again.'),
-                            backgroundColor: Color(0xFFEF4444),
+                      // Step 3: Confirmation Summary Dialog
+                      final confirmed = await showDialog<bool>(
+                        context: ctx,
+                        builder: (confirmCtx) => AlertDialog(
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                          title: const Row(
+                            children: [
+                              Icon(LucideIcons.calendarCheck, color: Color(0xFF00A36C)),
+                              SizedBox(width: 10),
+                              Text('Confirm Schedule'),
+                            ],
                           ),
-                        );
-                        return;
-                      }
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Please review the schedule details before saving:'),
+                              const SizedBox(height: 14),
+                              _summaryRow('Medication', medName),
+                              _summaryRow('Dosage', dosage),
+                              _summaryRow('Compartment', selectedCompCode),
+                              _summaryRow('Time', selectedTime.format(confirmCtx)),
+                              _summaryRow('Frequency', selectedFreq),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(confirmCtx, false),
+                              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                            ),
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF00A36C),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              ),
+                              onPressed: () => Navigator.pop(confirmCtx, true),
+                              child: const Text('Confirm & Save', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      );
+
+                      if (confirmed != true) return;
 
                       setSheetState(() => isSaving = true);
 
-                      final compNum = selectedComp.split(' ').last;
                       final scheduledDateTime = DateTime(
                         _selectedDate.year,
                         _selectedDate.month,
@@ -385,13 +440,15 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                         selectedTime.minute,
                       );
 
+                      final slotNum = selectedCompCode.replaceAll(RegExp(r'\D'), '');
+
                       final docData = <String, dynamic>{
                         'patientUid': uid,
                         'patientId': uid,
-                        'medicationName': name,
-                        'dosage': dosageStr,
-                        'compartment': selectedComp,
-                        'compCode': 'C$compNum',
+                        'medicationName': medName,
+                        'dosage': dosage,
+                        'compartment': 'Compartment $slotNum',
+                        'compCode': selectedCompCode,
                         'scheduledTime': Timestamp.fromDate(scheduledDateTime),
                         'frequency': selectedFreq,
                         'status': 'Upcoming',
@@ -411,7 +468,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                           Navigator.pop(ctx);
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text(isEditing ? '$name updated!' : '$name added to $selectedComp!'),
+                              content: Text(isEditing ? '$medName schedule updated!' : '$medName schedule created for $selectedCompCode!'),
                               backgroundColor: const Color(0xFF00A36C),
                               behavior: SnackBarBehavior.floating,
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -423,7 +480,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                         if (mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text('Failed to save medication: $e'),
+                              content: Text('Failed to save schedule: $e'),
                               backgroundColor: const Color(0xFFEF4444),
                             ),
                           );
@@ -433,7 +490,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                     child: isSaving
                         ? const SmartDoseLoading(size: 32, color: Colors.white)
                         : Text(
-                            isEditing ? 'Update Medication' : 'Save Medication',
+                            isEditing ? 'Update Schedule' : 'Save Schedule',
                             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                           ),
                   ),
@@ -446,13 +503,26 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     );
   }
 
+  Widget _summaryRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 13, color: Colors.grey)),
+          Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+
   Future<void> _deleteSchedule(DocumentSnapshot<Map<String, dynamic>> doc) async {
     final medName = doc.data()?['medicationName'] ?? 'Medication';
     await doc.reference.delete();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('$medName deleted.'),
+          content: Text('$medName schedule removed.'),
           backgroundColor: const Color(0xFFEF4444),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -515,64 +585,18 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(name, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryTextColor)),
-                      const SizedBox(height: 2),
-                      Text(dosage, style: TextStyle(fontSize: 14, color: secondaryTextColor, fontWeight: FontWeight.w600)),
+                      if (dosage.isNotEmpty)
+                        Text(dosage, style: TextStyle(fontSize: 14, color: secondaryTextColor)),
                     ],
                   ),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF00A36C).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(comp, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF00A36C))),
                 ),
               ],
             ),
             const SizedBox(height: 20),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xFF1E1E22)
-                    : const Color(0xFFF9FAFB),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: Theme.of(context).brightness == Brightness.dark
-                      ? const Color(0xFF27272A)
-                      : const Color(0xFFE5E7EB),
-                ),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Scheduled Time', style: TextStyle(color: secondaryTextColor, fontSize: 13, fontWeight: FontWeight.w500)),
-                      Text(timeStr, style: TextStyle(color: primaryTextColor, fontSize: 14, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const Divider(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Frequency', style: TextStyle(color: secondaryTextColor, fontSize: 13, fontWeight: FontWeight.w500)),
-                      Text(freq, style: TextStyle(color: primaryTextColor, fontSize: 14, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const Divider(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Permissions', style: TextStyle(color: secondaryTextColor, fontSize: 13, fontWeight: FontWeight.w500)),
-                      const Text('Managed by Caregiver (View-only)', style: TextStyle(color: Color(0xFF00A36C), fontSize: 13, fontWeight: FontWeight.w700)),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
+            _summaryRow('Dispenser Slot', comp),
+            _summaryRow('Scheduled Time', timeStr),
+            _summaryRow('Frequency', freq),
+            const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
               height: 48,
@@ -591,34 +615,78 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     );
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> get _compartmentsStream {
-    final uid = _uid;
-    if (uid != null && uid.isNotEmpty) {
-      return FirebaseFirestore.instance
-          .collection('compartments')
-          .where('patientUid', isEqualTo: uid)
-          .snapshots();
-    }
-    return FirebaseFirestore.instance
-        .collection('compartments')
-        .snapshots();
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // Unified Pill Inventory: Refill & Compartment Configuration
+  // ─────────────────────────────────────────────────────────────────────────
 
   Future<void> _refillCompartment(
-      BuildContext context, DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final data = doc.data();
-    final name = data?['medicationName'] ?? 'Medication';
-    final maxCapacity = data?['maxCapacity'] as int? ?? 30;
+      BuildContext context, int compNum, Map<String, dynamic> data, DocumentReference? ref) async {
+    final name = data['medicationName'] ?? 'Medication in Slot C$compNum';
+    final maxCapacity = data['maxCapacity'] as int? ?? 30;
 
-    await doc.reference.update({
-      'stockCount': maxCapacity,
-      'lastRefilledAt': FieldValue.serverTimestamp(),
-    });
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(Icons.refresh_rounded, color: Color(0xFF00A36C)),
+            SizedBox(width: 10),
+            Text('Confirm Refill'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Are you sure you want to refill Compartment C$compNum?'),
+            const SizedBox(height: 12),
+            _summaryRow('Compartment', 'Slot C$compNum'),
+            _summaryRow('Medication', name),
+            _summaryRow('Refill to', '$maxCapacity pills (Full Capacity)'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00A36C),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Confirm Refill', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final uid = _uid;
+    if (uid == null) return;
+
+    if (ref != null) {
+      await ref.update({
+        'stockCount': maxCapacity,
+        'lastRefilledAt': FieldValue.serverTimestamp(),
+      });
+    } else {
+      await FirebaseFirestore.instance.collection('compartments').doc('comp_$compNum').set({
+        'compartmentNumber': compNum,
+        'medicationName': name,
+        'dosage': data['dosage'] ?? '1 tablet',
+        'stockCount': maxCapacity,
+        'maxCapacity': maxCapacity,
+        'patientUid': uid,
+        'lastRefilledAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    }
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('$name refilled to $maxCapacity pills!'),
+          content: Text('Compartment C$compNum ($name) refilled to $maxCapacity pills!'),
           backgroundColor: const Color(0xFF00A36C),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -628,13 +696,16 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
   }
 
   Future<void> _showUpdateMedNameSheet(
-      BuildContext context, DocumentSnapshot<Map<String, dynamic>> doc) async {
-    final data = doc.data() ?? {};
+      BuildContext context, int compNum, Map<String, dynamic> data, DocumentReference? ref) async {
     final nameCtrl = TextEditingController(text: data['medicationName'] ?? '');
+    final doseCtrl = TextEditingController(text: data['dosage'] ?? '1 tablet');
+    final stockCtrl = TextEditingController(text: (data['stockCount'] ?? 0).toString());
     final maxCtrl = TextEditingController(text: (data['maxCapacity'] ?? 30).toString());
+
     final theme = Theme.of(context);
     final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
     final primaryTextColor = theme.colorScheme.onSurface;
+    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
 
     await showModalBottomSheet(
       context: context,
@@ -646,184 +717,315 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
           color: cardBgColor,
           borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Edit Compartment ${data['compartmentNumber'] ?? ''}',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryTextColor),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close_rounded),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: nameCtrl,
-              style: TextStyle(color: primaryTextColor),
-              decoration: InputDecoration(
-                labelText: 'Medication Name',
-                prefixIcon: const Icon(Icons.medication_outlined, color: Color(0xFF00A36C)),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Configure Compartment C$compNum',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryTextColor),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: maxCtrl,
-              keyboardType: TextInputType.number,
-              style: TextStyle(color: primaryTextColor),
-              decoration: InputDecoration(
-                labelText: 'Max Capacity (pills)',
-                prefixIcon: const Icon(Icons.numbers_rounded, color: Color(0xFF00A36C)),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+              Text(
+                'Assign medication details and capacity for dispenser slot C$compNum',
+                style: TextStyle(fontSize: 13, color: secondaryTextColor),
               ),
-            ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              height: 52,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00A36C),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
-                  elevation: 0,
+              const SizedBox(height: 18),
+              TextField(
+                controller: nameCtrl,
+                style: TextStyle(color: primaryTextColor),
+                decoration: InputDecoration(
+                  labelText: 'Medication Name',
+                  hintText: 'e.g. Amoxicillin',
+                  prefixIcon: const Icon(Icons.medication_outlined, color: Color(0xFF00A36C)),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                 ),
-                onPressed: () async {
-                  final newName = nameCtrl.text.trim();
-                  final maxCap = int.tryParse(maxCtrl.text.trim()) ?? 30;
-                  if (newName.isNotEmpty) {
-                    await doc.reference.update({
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: doseCtrl,
+                style: TextStyle(color: primaryTextColor),
+                decoration: InputDecoration(
+                  labelText: 'Dosage Details',
+                  hintText: 'e.g. 500 mg, 1 tablet',
+                  prefixIcon: const Icon(LucideIcons.pill, color: Color(0xFF00A36C)),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: stockCtrl,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: primaryTextColor),
+                      decoration: InputDecoration(
+                        labelText: 'Current Stock',
+                        prefixIcon: const Icon(Icons.inventory_rounded, color: Color(0xFF00A36C)),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextField(
+                      controller: maxCtrl,
+                      keyboardType: TextInputType.number,
+                      style: TextStyle(color: primaryTextColor),
+                      decoration: InputDecoration(
+                        labelText: 'Max Capacity',
+                        prefixIcon: const Icon(Icons.numbers_rounded, color: Color(0xFF00A36C)),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF00A36C),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
+                    elevation: 0,
+                  ),
+                  onPressed: () async {
+                    final newName = nameCtrl.text.trim();
+                    final newDose = doseCtrl.text.trim();
+                    final stock = int.tryParse(stockCtrl.text.trim()) ?? 0;
+                    final maxCap = int.tryParse(maxCtrl.text.trim()) ?? 30;
+
+                    if (newName.isEmpty) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(content: Text('Medication name is required.')),
+                      );
+                      return;
+                    }
+
+                    // Confirmation Dialog Before Saving Important Inventory Changes
+                    final confirmed = await showDialog<bool>(
+                      context: ctx,
+                      builder: (confirmCtx) => AlertDialog(
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                        title: const Row(
+                          children: [
+                            Icon(Icons.check_circle_outline_rounded, color: Color(0xFF00A36C)),
+                            SizedBox(width: 10),
+                            Text('Confirm Assignment'),
+                          ],
+                        ),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Please confirm the compartment changes:'),
+                            const SizedBox(height: 12),
+                            _summaryRow('Compartment', 'Slot C$compNum'),
+                            _summaryRow('Medication', newName),
+                            _summaryRow('Dosage', newDose.isNotEmpty ? newDose : '1 dose'),
+                            _summaryRow('Stock Count', '$stock / $maxCap pills'),
+                          ],
+                        ),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(confirmCtx, false), child: const Text('Cancel', style: TextStyle(color: Colors.grey))),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFF00A36C),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                            onPressed: () => Navigator.pop(confirmCtx, true),
+                            child: const Text('Save Changes', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    if (confirmed != true) return;
+
+                    final uid = _uid;
+                    if (uid == null) return;
+
+                    final updateMap = <String, dynamic>{
+                      'compartmentNumber': compNum,
                       'medicationName': newName,
+                      'dosage': newDose.isNotEmpty ? newDose : '1 tablet',
+                      'stockCount': stock,
                       'maxCapacity': maxCap,
-                    });
-                  }
-                  if (ctx.mounted) Navigator.pop(ctx);
-                },
-                child: const Text('Save Changes',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                      'patientUid': uid,
+                      'updatedAt': FieldValue.serverTimestamp(),
+                    };
+
+                    if (ref != null) {
+                      await ref.set(updateMap, SetOptions(merge: true));
+                    } else {
+                      await FirebaseFirestore.instance
+                          .collection('compartments')
+                          .doc('comp_$compNum')
+                          .set(updateMap, SetOptions(merge: true));
+                    }
+
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Compartment C$compNum configured with $newName!'),
+                          backgroundColor: const Color(0xFF00A36C),
+                          behavior: SnackBarBehavior.floating,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
+                      );
+                    }
+                  },
+                  child: const Text('Save Compartment Details',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Tab Selector: Visually Identical to History Tab (Today, Week, Month)
+  // ─────────────────────────────────────────────────────────────────────────
+
   Widget _buildSectionSegmentedControl() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final theme = Theme.of(context);
+    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final primaryTextColor = theme.colorScheme.onSurface;
+    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
+
+    final isSchedule = _selectedSection == 'schedule';
+    final alignmentX = isSchedule ? -1.0 : 1.0;
+
     return Container(
-      height: 48,
+      height: 52,
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E1E22) : const Color(0xFFF3F4F6),
-        borderRadius: BorderRadius.circular(16),
+        color: cardBgColor,
+        borderRadius: BorderRadius.circular(30),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: theme.brightness == Brightness.dark ? 0.2 : 0.03),
+            blurRadius: 10,
+          ),
+        ],
       ),
-      child: Row(
+      child: Stack(
         children: [
-          Expanded(
-            child: GestureDetector(
-              onTap: () => setState(() => _selectedSection = 'schedule'),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
+          // Sliding Green Pill Background Indicator (identical to history_tab)
+          AnimatedAlign(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.fastOutSlowIn,
+            alignment: Alignment(alignmentX, 0.0),
+            child: FractionallySizedBox(
+              widthFactor: 0.5,
+              heightFactor: 1.0,
+              child: Container(
                 decoration: BoxDecoration(
-                  color: _selectedSection == 'schedule'
-                      ? (isDark ? const Color(0xFF2D2D35) : Colors.white)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: _selectedSection == 'schedule'
-                      ? [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
-                          ),
-                        ]
-                      : null,
-                ),
-                alignment: Alignment.center,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      LucideIcons.calendarDays,
-                      size: 16,
-                      color: _selectedSection == 'schedule'
-                          ? const Color(0xFF00A36C)
-                          : (isDark ? Colors.white60 : const Color(0xFF6B7280)),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Schedule',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: _selectedSection == 'schedule' ? FontWeight.w700 : FontWeight.w500,
-                        color: _selectedSection == 'schedule'
-                            ? const Color(0xFF00A36C)
-                            : (isDark ? Colors.white60 : const Color(0xFF6B7280)),
-                      ),
+                  gradient: const LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [Color(0xFF00C882), Color(0xFF00A36C)],
+                  ),
+                  borderRadius: BorderRadius.circular(26),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF00A36C).withValues(alpha: 0.35),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          Expanded(
-            child: GestureDetector(
-              onTap: () => setState(() => _selectedSection = 'inventory'),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                decoration: BoxDecoration(
-                  color: _selectedSection == 'inventory'
-                      ? (isDark ? const Color(0xFF2D2D35) : Colors.white)
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: _selectedSection == 'inventory'
-                      ? [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.06),
-                            blurRadius: 6,
-                            offset: const Offset(0, 2),
+
+          // Options Row
+          Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _selectedSection = 'schedule'),
+                  child: Center(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          LucideIcons.calendarDays,
+                          size: 16,
+                          color: isSchedule ? Colors.white : secondaryTextColor,
+                        ),
+                        const SizedBox(width: 8),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 250),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            fontFamily: theme.textTheme.bodyMedium?.fontFamily,
+                            color: isSchedule ? Colors.white : secondaryTextColor,
                           ),
-                        ]
-                      : null,
-                ),
-                alignment: Alignment.center,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      LucideIcons.boxes,
-                      size: 16,
-                      color: _selectedSection == 'inventory'
-                          ? const Color(0xFF00A36C)
-                          : (isDark ? Colors.white60 : const Color(0xFF6B7280)),
+                          child: const Text('Schedule'),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Pill Inventory',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: _selectedSection == 'inventory' ? FontWeight.w700 : FontWeight.w500,
-                        color: _selectedSection == 'inventory'
-                            ? const Color(0xFF00A36C)
-                            : (isDark ? Colors.white60 : const Color(0xFF6B7280)),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _selectedSection = 'inventory'),
+                  child: Center(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          LucideIcons.boxes,
+                          size: 16,
+                          color: !isSchedule ? Colors.white : secondaryTextColor,
+                        ),
+                        const SizedBox(width: 8),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 250),
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            fontFamily: theme.textTheme.bodyMedium?.fontFamily,
+                            color: !isSchedule ? Colors.white : secondaryTextColor,
+                          ),
+                          child: const Text('Pill Inventory'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Pill Inventory Content (All 10 Compartments Displayed Consistently)
+  // ─────────────────────────────────────────────────────────────────────────
 
   Widget _buildInventoryContent() {
     final theme = Theme.of(context);
@@ -835,78 +1037,81 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _compartmentsStream,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
           return const Padding(
             padding: EdgeInsets.symmetric(vertical: 60),
-            child: Center(child: SmartDoseLoading(size: 100)),
+            child: Center(child: SmartDoseLoading(size: 80)),
           );
         }
 
         final rawDocs = snapshot.data?.docs ?? [];
-        final docs = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(rawDocs)
-          ..sort((a, b) {
-            final aNum = a.data()['compartmentNumber'] as int? ??
-                int.tryParse(a.id.replaceAll(RegExp(r'\D'), '')) ?? 0;
-            final bNum = b.data()['compartmentNumber'] as int? ??
-                int.tryParse(b.id.replaceAll(RegExp(r'\D'), '')) ?? 0;
-            return aNum.compareTo(bNum);
-          });
+        _latestCompartmentDocs = rawDocs;
 
-        if (docs.isEmpty) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 20),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.inventory_2_outlined,
-                      size: 60, color: secondaryTextColor.withValues(alpha: 0.4)),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No compartments found',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: primaryTextColor),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Compartment stock will appear here once your SmartDose Dispenser is paired.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 14, color: secondaryTextColor),
-                  ),
-                ],
-              ),
-            ),
-          );
+        // Map existing compartment docs by compartment number (1..10)
+        final Map<int, QueryDocumentSnapshot<Map<String, dynamic>>> docMap = {};
+        for (final doc in rawDocs) {
+          final numVal = doc.data()['compartmentNumber'] as int? ??
+              int.tryParse(doc.id.replaceAll(RegExp(r'\D'), ''));
+          if (numVal != null && numVal >= 1 && numVal <= 10) {
+            docMap[numVal] = doc;
+          }
         }
 
-        final totalLow = docs.where((d) => (d.data()['stockCount'] as int? ?? 0) <= 3 && (d.data()['stockCount'] as int? ?? 0) > 0).length;
-        final totalEmpty = docs.where((d) => (d.data()['stockCount'] as int? ?? 0) == 0).length;
+        // Calculate summary across all 10 slots
+        int occupiedCount = 0;
+        int lowCount = 0;
+        int emptyCount = 0;
+
+        for (int i = 1; i <= 10; i++) {
+          final doc = docMap[i];
+          final data = doc?.data();
+          final name = (data?['medicationName'] as String? ?? '').trim();
+          final stock = (data?['stockCount'] as int? ?? 0);
+          if (name.isNotEmpty) {
+            occupiedCount++;
+            if (stock == 0) {
+              emptyCount++;
+            } else if (stock <= 3) {
+              lowCount++;
+            }
+          } else {
+            emptyCount++;
+          }
+        }
 
         return Column(
           children: [
-            _buildInventorySummaryHeader(docs.length, totalLow, totalEmpty),
-            const SizedBox(height: 14),
-            ...docs.map((doc) => _buildCompartmentCard(doc, isDark, cardBgColor, primaryTextColor, secondaryTextColor)),
+            _buildInventorySummaryHeader(10, occupiedCount, lowCount, emptyCount),
+            const SizedBox(height: 16),
+            ...List.generate(10, (idx) {
+              final slotNum = idx + 1;
+              final doc = docMap[slotNum];
+              return _buildCompartmentSlotCard(slotNum, doc, isDark, cardBgColor, primaryTextColor, secondaryTextColor);
+            }),
           ],
         );
       },
     );
   }
 
-  Widget _buildCompartmentCard(
-    DocumentSnapshot<Map<String, dynamic>> doc,
+  Widget _buildCompartmentSlotCard(
+    int slotNum,
+    QueryDocumentSnapshot<Map<String, dynamic>>? doc,
     bool isDark,
     Color cardBgColor,
     Color primaryTextColor,
     Color secondaryTextColor,
   ) {
-    final data = doc.data() ?? {};
-    final compNum = data['compartmentNumber'] ?? doc.id.replaceAll(RegExp(r'\D'), '');
-    final medName = data['medicationName'];
+    final data = doc?.data() ?? <String, dynamic>{};
+    final medName = (data['medicationName'] as String? ?? '').trim();
+    final dosage = data['dosage'] as String? ?? '';
     final stock = data['stockCount'] as int? ?? 0;
     final maxCap = data['maxCapacity'] as int? ?? 30;
+    final isAssigned = medName.isNotEmpty;
+
     final progress = maxCap > 0 ? (stock / maxCap).clamp(0.0, 1.0) : 0.0;
-    final isLow = stock <= 3 && stock > 0;
-    final isEmpty = stock == 0;
+    final isLow = isAssigned && stock <= 3 && stock > 0;
+    final isEmpty = isAssigned && stock == 0;
     final lastRefilled = data['lastRefilledAt'] as Timestamp?;
     final refilledStr = lastRefilled != null
         ? DateFormat('MMM d, hh:mm a').format(lastRefilled.toDate())
@@ -914,7 +1119,9 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
 
     Color borderColor = isDark ? const Color(0xFF374151) : const Color(0xFFE5E7EB);
     Color barColor = const Color(0xFF00A36C);
-    if (isEmpty) {
+    if (!isAssigned) {
+      borderColor = isDark ? const Color(0xFF262626) : const Color(0xFFE2E8F0);
+    } else if (isEmpty) {
       borderColor = const Color(0xFFFCA5A5);
       barColor = const Color(0xFFEF4444);
     } else if (isLow) {
@@ -948,43 +1155,59 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFE6F7F0),
+                      color: isAssigned ? const Color(0xFFE6F7F0) : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
-                      'Comp $compNum',
-                      style: const TextStyle(
+                      'Comp $slotNum',
+                      style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF00A36C),
+                        color: isAssigned ? const Color(0xFF00A36C) : secondaryTextColor,
                       ),
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Text(
-                    medName ?? 'Unassigned',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: medName != null ? primaryTextColor : secondaryTextColor,
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isAssigned ? medName : 'Empty / Unassigned',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: isAssigned ? primaryTextColor : secondaryTextColor,
+                        ),
+                      ),
+                      if (isAssigned && dosage.isNotEmpty)
+                        Text(
+                          dosage,
+                          style: TextStyle(fontSize: 12, color: secondaryTextColor),
+                        ),
+                    ],
                   ),
                 ],
               ),
-              if (isEmpty)
+              if (!isAssigned)
+                _inventoryStatusBadge('Empty Slot', Colors.grey, Colors.grey.withValues(alpha: 0.15))
+              else if (isEmpty)
                 _inventoryStatusBadge('Empty', const Color(0xFFEF4444), const Color(0xFFFEE2E2))
               else if (isLow)
-                _inventoryStatusBadge('Low Stock', const Color(0xFFD97706), const Color(0xFFFEF3C7)),
+                _inventoryStatusBadge('Low Stock', const Color(0xFFD97706), const Color(0xFFFEF3C7))
+              else
+                _inventoryStatusBadge('Ready', const Color(0xFF10B981), const Color(0xFFD1FAE5)),
             ],
           ),
           const SizedBox(height: 14),
+
+          // Progress indicator for stocked pills
           Row(
             children: [
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: LinearProgressIndicator(
-                    value: progress,
+                    value: isAssigned ? progress : 0.0,
                     minHeight: 10,
                     backgroundColor: isDark ? const Color(0xFF374151) : const Color(0xFFF3F4F6),
                     valueColor: AlwaysStoppedAnimation<Color>(barColor),
@@ -993,7 +1216,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
               ),
               const SizedBox(width: 14),
               Text(
-                '$stock / $maxCap pills',
+                isAssigned ? '$stock / $maxCap pills' : '0 / $maxCap pills',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
@@ -1002,6 +1225,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
               ),
             ],
           ),
+
           if (refilledStr != null) ...[
             const SizedBox(height: 6),
             Text(
@@ -1009,24 +1233,39 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
               style: TextStyle(fontSize: 11, color: secondaryTextColor),
             ),
           ],
+
+          // Caregiver Editing Controls (Role-based permissions)
           if (widget.isCaregiver) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton.icon(
-                  style: TextButton.styleFrom(foregroundColor: secondaryTextColor),
-                  onPressed: () => _showUpdateMedNameSheet(context, doc),
-                  icon: const Icon(Icons.edit_outlined, size: 16),
-                  label: const Text('Edit', style: TextStyle(fontWeight: FontWeight.bold)),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: primaryTextColor,
+                    side: BorderSide(color: Colors.grey.shade400),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  ),
+                  onPressed: () => _showUpdateMedNameSheet(context, slotNum, data, doc?.reference),
+                  icon: const Icon(Icons.edit_outlined, size: 15),
+                  label: Text(isAssigned ? 'Edit Medication' : 'Assign Medication',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
                 ),
-                const SizedBox(width: 8),
-                TextButton.icon(
-                  style: TextButton.styleFrom(foregroundColor: const Color(0xFF00A36C)),
-                  onPressed: () => _refillCompartment(context, doc),
-                  icon: const Icon(Icons.refresh_rounded, size: 16),
-                  label: const Text('Refill', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
+                if (isAssigned) ...[
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00A36C),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    ),
+                    onPressed: () => _refillCompartment(context, slotNum, data, doc?.reference),
+                    icon: const Icon(Icons.refresh_rounded, size: 15, color: Colors.white),
+                    label: const Text('Refill',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white)),
+                  ),
+                ],
               ],
             ),
           ],
@@ -1035,11 +1274,11 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     );
   }
 
-  Widget _buildInventorySummaryHeader(int total, int lowCount, int emptyCount) {
+  Widget _buildInventorySummaryHeader(int total, int occupied, int lowCount, int emptyCount) {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [Color(0xFF00A36C), Color(0xFF00C882)]),
+        gradient: const LinearGradient(colors: [Color(0xFF00C882), Color(0xFF00A36C)]),
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
@@ -1052,13 +1291,13 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _inventorySummaryItem('$total', 'Total Comps', Icons.grid_view_rounded),
+          _inventorySummaryItem('$total', 'Available Comps', Icons.grid_view_rounded),
           _inventorySummaryDivider(),
-          _inventorySummaryItem('${total - lowCount - emptyCount}', 'Well stocked', Icons.check_circle_rounded),
+          _inventorySummaryItem('$occupied', 'Occupied', Icons.check_circle_rounded),
           _inventorySummaryDivider(),
-          _inventorySummaryItem('$lowCount', 'Low stock', Icons.warning_amber_rounded),
+          _inventorySummaryItem('$lowCount', 'Low Stock', Icons.warning_amber_rounded),
           _inventorySummaryDivider(),
-          _inventorySummaryItem('$emptyCount', 'Empty', Icons.remove_circle_outline_rounded),
+          _inventorySummaryItem('$emptyCount', 'Empty Slots', Icons.remove_circle_outline_rounded),
         ],
       ),
     );
@@ -1079,13 +1318,27 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     return Container(width: 1, height: 36, color: Colors.white24);
   }
 
-  Widget _inventoryStatusBadge(String label, Color textColor, Color bgColor) {
+  Widget _inventoryStatusBadge(String text, Color textColor, Color bgColor) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(10)),
-      child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: textColor)),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+          color: textColor,
+        ),
+      ),
     );
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Main Build
+  // ─────────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -1121,7 +1374,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                         Text(
                           _selectedSection == 'schedule'
                               ? DateFormat('EEEE, d MMMM yyyy').format(_selectedDate)
-                              : 'SmartDose dispenser compartments',
+                              : 'SmartDose 10-Compartment Dispenser',
                           style: TextStyle(fontSize: 15, color: secondaryTextColor),
                         ),
                       ],
@@ -1166,7 +1419,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
           ),
         ),
 
-        // Floating Action Button (Caregiver only and on schedule tab)
+        // Floating Action Button (Caregiver only on schedule section)
         if (widget.isCaregiver && _selectedSection == 'schedule')
           Positioned(
             bottom: 20,
@@ -1198,7 +1451,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                       Icon(Icons.add_rounded, color: Colors.white, size: 22),
                       SizedBox(width: 8),
                       Text(
-                        'Add medication',
+                        'Schedule medication',
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
                       ),
                     ],
@@ -1249,78 +1502,69 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     final isDark = theme.brightness == Brightness.dark;
     final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
     final primaryTextColor = theme.colorScheme.onSurface;
-    final secondaryTextColor = primaryTextColor.withValues(alpha: 0.65);
 
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 10),
-      decoration: BoxDecoration(
-        color: cardBgColor,
-        borderRadius: BorderRadius.circular(32),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: List.generate(_weekDays.length, (idx) {
-          final date = _weekDays[idx];
-          final isSelected = idx == _selectedDateIndex;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: List.generate(7, (index) {
+        final date = _weekDays[index];
+        final isSelected = index == _selectedDateIndex;
+        final isToday = date.day == DateTime.now().day &&
+            date.month == DateTime.now().month &&
+            date.year == DateTime.now().year;
 
-          return GestureDetector(
-            onTap: () => setState(() => _selectedDateIndex = idx),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 46,
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                gradient: isSelected
-                    ? const LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [Color(0xFF00C882), Color(0xFF00A36C)],
-                      )
-                    : null,
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: isSelected
-                    ? [
-                        BoxShadow(
-                          color: const Color(0xFF00A36C).withValues(alpha: 0.35),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
-                        ),
-                      ]
-                    : [],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    dayLabels[idx],
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                      color: isSelected ? Colors.white : secondaryTextColor,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '${date.day}',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w900,
-                      color: isSelected ? Colors.white : primaryTextColor,
-                    ),
-                  ),
-                ],
-              ),
+        return GestureDetector(
+          onTap: () => setState(() => _selectedDateIndex = index),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: 44,
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            decoration: BoxDecoration(
+              color: isSelected
+                  ? const Color(0xFF00A36C)
+                  : (isToday ? (isDark ? const Color(0xFF064E3B) : const Color(0xFFE6F7F0)) : cardBgColor),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: isSelected
+                  ? [
+                      BoxShadow(
+                        color: const Color(0xFF00A36C).withValues(alpha: 0.35),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ]
+                  : [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.03),
+                        blurRadius: 6,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
             ),
-          );
-        }),
-      ),
+            child: Column(
+              children: [
+                Text(
+                  dayLabels[index],
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: isSelected
+                        ? Colors.white
+                        : (isToday ? const Color(0xFF00A36C) : primaryTextColor.withValues(alpha: 0.6)),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${date.day}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: isSelected ? Colors.white : primaryTextColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
     );
   }
 
@@ -1333,8 +1577,11 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _schedulesStream,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-          return const Center(child: SmartDoseLoading(size: 140));
+        if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
+          return const Padding(
+            padding: EdgeInsets.symmetric(vertical: 40),
+            child: Center(child: SmartDoseLoading(size: 80)),
+          );
         }
 
         final allDocs = snapshot.data?.docs ?? [];
@@ -1342,14 +1589,12 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
 
         final docs = allDocs.where((doc) {
           final data = doc.data();
-          final isActive = data['isActive'] ?? true;
-          if (!isActive) return false;
+          if ((data['isActive'] ?? true) != true) return false;
           final ts = data['scheduledTime'] as Timestamp?;
           if (ts == null) return false;
           final schedDate = ts.toDate();
           final schedDay = DateTime(schedDate.year, schedDate.month, schedDate.day);
 
-          // Cannot show medication on dates before its scheduled start date
           if (targetDay.isBefore(schedDay)) return false;
 
           final freq = (data['frequency'] as String? ?? 'Daily').trim().toLowerCase();
@@ -1358,10 +1603,9 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
           } else if (freq == 'weekly') {
             return targetDay.weekday == schedDay.weekday;
           } else {
-            // 'once' or single dose: must match exact same day
             return targetDay.year == schedDay.year &&
-                   targetDay.month == schedDay.month &&
-                   targetDay.day == schedDay.day;
+                targetDay.month == schedDay.month &&
+                targetDay.day == schedDay.day;
           }
         }).toList();
 
@@ -1391,7 +1635,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                 const SizedBox(height: 8),
                 Text(
                   widget.isCaregiver
-                      ? 'Tap "Add medication" below to schedule a dose for this day.'
+                      ? 'Tap "Schedule medication" below to create a schedule from your Pill Inventory.'
                       : 'Your caregiver configures and manages your medication schedules.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: secondaryTextColor),
@@ -1412,7 +1656,7 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
     final med = doc.data() ?? {};
     final name = med['medicationName'] ?? 'Medication';
     final dosage = med['dosage'] ?? '500 mg';
-    final comp = med['compartment'] ?? 'Compartment 1';
+    final comp = med['compCode'] ?? med['compartment'] ?? 'C1';
     final status = med['status'] as String? ?? 'Upcoming';
     final ts = med['scheduledTime'] as Timestamp?;
     final date = ts?.toDate();
@@ -1449,41 +1693,6 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
         statusBg = isDark ? const Color(0xFF064E3B) : const Color(0xFFE6F7F0);
         statusText = const Color(0xFF00A36C);
         statusIcon = Icons.access_time_rounded;
-    }
-
-    String statusLabel = status;
-    if (status.toLowerCase() == 'upcoming') {
-      final occurrenceDate = date != null
-          ? DateTime(_selectedDate.year, _selectedDate.month, _selectedDate.day, date.hour, date.minute)
-          : null;
-      if (occurrenceDate != null) {
-        final now = DateTime.now();
-        final diff = occurrenceDate.difference(now);
-        if (diff.isNegative) {
-          if (now.difference(occurrenceDate).inHours >= 2) {
-            statusLabel = 'Missed';
-            statusBg = isDark ? const Color(0xFF7F1D1D) : const Color(0xFFFEE2E2);
-            statusText = const Color(0xFFEF4444);
-            statusIcon = Icons.cancel_outlined;
-          } else {
-            statusLabel = 'Due now';
-            statusBg = isDark ? const Color(0xFF78350F) : const Color(0xFFFEF3C7);
-            statusText = const Color(0xFFF59E0B);
-            statusIcon = Icons.access_time_rounded;
-          }
-        } else {
-          final h = diff.inHours;
-          final m = diff.inMinutes % 60;
-          final s = diff.inSeconds % 60;
-          if (h > 0) {
-            statusLabel = 'In ${h}h ${m}m';
-          } else if (m > 0) {
-            statusLabel = 'In ${m}m ${s}s';
-          } else {
-            statusLabel = 'In ${s}s';
-          }
-        }
-      }
     }
 
     return Dismissible(
@@ -1548,20 +1757,17 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                     Text(
                       timeNumStr,
                       style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
                         color: Color(0xFF00A36C),
-                        letterSpacing: -0.3,
-                        height: 1.1,
                       ),
                     ),
                     Text(
                       amPmStr,
                       style: const TextStyle(
                         fontSize: 10,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w600,
                         color: Color(0xFF00A36C),
-                        height: 1.1,
                       ),
                     ),
                   ],
@@ -1572,53 +1778,46 @@ class _PatientMedsTabState extends State<PatientMedsTab> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(name,
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: primaryTextColor)),
-                    const SizedBox(height: 3),
-                    Text('$dosage · $comp',
-                        style: TextStyle(fontSize: 13, color: secondaryTextColor)),
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(color: statusBg, borderRadius: BorderRadius.circular(14)),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(statusIcon, color: statusText, size: 14),
-                          const SizedBox(width: 4),
-                          Text(statusLabel,
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: statusText)),
-                        ],
+                    Text(
+                      name,
+                      style: TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.bold,
+                        color: primaryTextColor,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$dosage · $comp',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: secondaryTextColor,
                       ),
                     ),
                   ],
                 ),
               ),
-              if (widget.isCaregiver)
-                IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFFEF4444), size: 22),
-                  tooltip: 'Delete Medication',
-                  onPressed: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('Delete Medication?'),
-                        content: Text('Are you sure you want to delete $name?'),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-                          TextButton(
-                            onPressed: () => Navigator.pop(ctx, true),
-                            child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
-                          ),
-                        ],
-                      ),
-                    );
-                    if (confirm == true) {
-                      _deleteSchedule(doc);
-                    }
-                  },
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: statusBg,
+                  borderRadius: BorderRadius.circular(12),
                 ),
-              Icon(Icons.chevron_right_rounded, color: secondaryTextColor, size: 20),
+                child: Row(
+                  children: [
+                    Icon(statusIcon, color: statusText, size: 14),
+                    const SizedBox(width: 4),
+                    Text(
+                      status,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: statusText,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),

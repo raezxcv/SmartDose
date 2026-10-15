@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -9,6 +10,41 @@ import '../services/pairing_service.dart';
 import 'confirm_pairing_dialog.dart';
 import 'linked_account_screen.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
+
+/// Formatter that automatically capitalizes and formats code as SPD-XXXX-XXXX
+class PairingCodeInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) {
+    final raw = newValue.text.toUpperCase();
+    // Allow hardware IDs like SD-XXXX or alphanumeric codes
+    if (!raw.startsWith('SPD') && !raw.startsWith('SD-')) {
+      return newValue.copyWith(text: raw);
+    }
+
+    if (raw.startsWith('SPD')) {
+      // Remove all non-alphanumeric
+      final cleaned = raw.replaceAll(RegExp(r'[^A-Z0-9]'), '');
+      final buffer = StringBuffer();
+      for (int i = 0; i < cleaned.length && i < 11; i++) {
+        if (i == 3 || i == 7) {
+          buffer.write('-');
+        }
+        buffer.write(cleaned[i]);
+      }
+      final formatted = buffer.toString();
+      return TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+    }
+
+    return newValue.copyWith(text: raw);
+  }
+}
 
 class ConnectPatientScreen extends StatefulWidget {
   const ConnectPatientScreen({super.key});
@@ -21,8 +57,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
   final MobileScannerController _scannerController = MobileScannerController();
   final PairingService _pairingService = PairingService();
   final ImagePicker _imagePicker = ImagePicker();
+  final TextEditingController _manualCodeController = TextEditingController();
 
   bool _isProcessing = false;
+  bool _isScanningLocked = false;
   bool _isTorchOn = false;
   bool _hasCameraPermission = false;
   bool _isCheckingPermission = true;
@@ -81,18 +119,22 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
 
   @override
   void dispose() {
+    _manualCodeController.dispose();
     _scannerController.dispose();
     super.dispose();
   }
 
   Future<void> _pickImageFromGallery() async {
-    if (_isProcessing) return;
+    if (_isProcessing || _isScanningLocked) return;
 
     try {
       final XFile? file = await _imagePicker.pickImage(source: ImageSource.gallery);
       if (file == null) return;
 
-      setState(() => _isProcessing = true);
+      setState(() {
+        _isProcessing = true;
+        _isScanningLocked = true;
+      });
 
       final BarcodeCapture? capture = await _scannerController.analyzeImage(file.path);
       final barcode = capture?.barcodes.firstOrNull;
@@ -101,7 +143,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
         await _handleScannedCode(barcode.rawValue!);
       } else {
         if (mounted) {
-          setState(() => _isProcessing = false);
+          setState(() {
+            _isProcessing = false;
+            _isScanningLocked = false;
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Row(
@@ -121,7 +166,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _isProcessing = false);
+        setState(() {
+          _isProcessing = false;
+          _isScanningLocked = false;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to read image: $e'),
@@ -151,7 +199,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _isScanningLocked = false);
+            },
             child: const Text('Cancel', style: TextStyle(color: Color(0xFF6B7280))),
           ),
           ElevatedButton(
@@ -161,6 +212,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Please sign in to link device.')),
                 );
+                setState(() => _isScanningLocked = false);
                 return;
               }
               setState(() => _isProcessing = true);
@@ -171,7 +223,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                   patientName: user.displayName ?? 'Patient',
                 );
                 if (mounted) {
-                  setState(() => _isProcessing = false);
+                  setState(() {
+                    _isProcessing = false;
+                    _isScanningLocked = false;
+                  });
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('SmartDose Dispenser $deviceId connected successfully!'),
@@ -182,7 +237,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 }
               } catch (e) {
                 if (mounted) {
-                  setState(() => _isProcessing = false);
+                  setState(() {
+                    _isProcessing = false;
+                    _isScanningLocked = false;
+                  });
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text(e.toString().replaceAll('Exception: ', '')),
@@ -205,7 +263,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
 
   Future<void> _handleScannedCode(String rawCode) async {
     if (_isProcessing) return;
-    setState(() => _isProcessing = true);
+    setState(() {
+      _isProcessing = true;
+      _isScanningLocked = true;
+    });
 
     try {
       final result = await _pairingService.validatePairingToken(rawCode);
@@ -218,7 +279,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
         return;
       }
 
-      // 1-to-1 Pairing Rule: Check if patient already has another caregiver
+      // Check if patient is already paired with another caregiver
       if (result['isAlreadyLinked'] == true) {
         showDialog(
           context: context,
@@ -226,23 +287,28 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
             title: const Row(
               children: [
-                Icon(Icons.warning_amber_rounded, color: Color(0xFFD97706), size: 24),
+                Icon(Icons.info_outline_rounded, color: Color(0xFF00A36C), size: 24),
                 SizedBox(width: 8),
-                Text('Already Linked'),
+                Text('Pairing Connection'),
               ],
             ),
             content: Text(
-              '${result['name'] ?? 'This patient'} is already paired with another caregiver (${result['existingCaregiverName'] ?? 'Caregiver'}). Under SmartDose 1-to-1 pairing rules, only one caregiver can be linked at a time.',
+              '${result['name'] ?? 'This patient'} is currently linked with ${result['existingCaregiverName'] ?? 'a caregiver'}. Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles.',
               style: const TextStyle(fontSize: 14, height: 1.45),
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(ctx),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  setState(() => _isScanningLocked = false);
+                },
                 child: const Text('OK', style: TextStyle(color: Color(0xFF00A36C), fontWeight: FontWeight.bold)),
               ),
             ],
           ),
-        );
+        ).then((_) {
+          if (mounted) setState(() => _isScanningLocked = false);
+        });
         return;
       }
 
@@ -250,10 +316,15 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
       showDialog(
         context: context,
         builder: (_) => ConfirmPairingDialog(patientData: result),
-      );
+      ).then((_) {
+        if (mounted) setState(() => _isScanningLocked = false);
+      });
     } catch (e) {
       if (mounted) {
-        setState(() => _isProcessing = false);
+        setState(() {
+          _isProcessing = false;
+          _isScanningLocked = false;
+        });
         final errorMsg = e.toString().replaceAll('Exception: ', '');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -275,7 +346,6 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
   }
 
   void _showManualEntryDialog() {
-    final controller = TextEditingController();
     showDialog(
       context: context,
       builder: (ctx) {
@@ -291,8 +361,11 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
               ),
               const SizedBox(height: 16),
               TextField(
-                controller: controller,
+                controller: _manualCodeController,
                 textCapitalization: TextCapitalization.characters,
+                inputFormatters: [
+                  PairingCodeInputFormatter(),
+                ],
                 decoration: InputDecoration(
                   hintText: 'e.g. SPD-8F4K-91XQ',
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
@@ -311,7 +384,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
             ),
             ElevatedButton(
               onPressed: () {
-                final code = controller.text.trim();
+                final code = _manualCodeController.text.trim();
                 if (code.isNotEmpty) {
                   Navigator.pop(ctx);
                   _handleScannedCode(code);
@@ -390,10 +463,11 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                     MobileScanner(
                       controller: _scannerController,
                       onDetect: (capture) {
+                        if (_isProcessing || _isScanningLocked) return;
                         final List<Barcode> barcodes = capture.barcodes;
                         for (final barcode in barcodes) {
-                          if (barcode.rawValue != null && !_isProcessing) {
-                            _handleScannedCode(barcode.rawValue!);
+                          if (barcode.rawValue != null && barcode.rawValue!.trim().isNotEmpty) {
+                            _handleScannedCode(barcode.rawValue!.trim());
                             break;
                           }
                         }
@@ -544,14 +618,10 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  width: 72,
-                  height: 72,
-                  decoration: BoxDecoration(
-                    color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(LucideIcons.userCheck, color: emerald, size: 36),
+                AppAvatar(
+                  name: patientName,
+                  size: 72,
+                  showGradientBorder: true,
                 ),
                 const SizedBox(height: 20),
                 Text(
@@ -561,7 +631,7 @@ class _ConnectPatientScreenState extends State<ConnectPatientScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'You are already actively paired with $patientName. Under SmartDose strict 1-to-1 pairing rules, each caregiver is linked to only one patient.\n\nTo connect with another patient, please unlink your current patient first.',
+                  'You are actively paired with $patientName. Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles.\n\nTo connect with another patient, please manage your linked patient profile.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: secondaryTextColor, height: 1.5),
                 ),

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'linked_account_screen.dart';
 
-/// ConnectedCaregiversScreen now points to the unified LinkedAccountScreen
-/// preserving backward compatibility while strictly enforcing 1-to-1 pairing.
+/// ConnectedCaregiversScreen points to the unified LinkedAccountScreen
+/// preserving backward compatibility for role-based patient and caregiver pairing.
 class ConnectedCaregiversScreen extends StatelessWidget {
   const ConnectedCaregiversScreen({super.key});
 

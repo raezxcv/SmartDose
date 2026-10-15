@@ -7,6 +7,7 @@ import '../services/pairing_service.dart';
 import 'pair_caregiver_screen.dart';
 import 'connect_patient_screen.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 
 class LinkedAccountScreen extends StatefulWidget {
   final bool isCaregiver;
@@ -22,15 +23,7 @@ class _LinkedAccountScreenState extends State<LinkedAccountScreen> {
   final String? _uid = FirebaseAuth.instance.currentUser?.uid;
   bool _isUnlinking = false;
 
-  String _getInitials(String name) {
-    final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.length >= 2) {
-      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
-    } else if (parts.isNotEmpty && parts[0].isNotEmpty) {
-      return parts[0][0].toUpperCase();
-    }
-    return widget.isCaregiver ? 'PT' : 'CG';
-  }
+
 
   void _confirmUnlink(Map<String, dynamic> pairing) {
     final pairingId = pairing['pairingId'] as String? ?? '';
@@ -251,9 +244,7 @@ class _LinkedAccountScreenState extends State<LinkedAccountScreen> {
           ),
           const SizedBox(height: 10),
           Text(
-            widget.isCaregiver
-                ? 'Under SmartDose 1-to-1 pairing rules, each caregiver is linked to exactly one patient. Scan your patient\'s QR code to begin monitoring.'
-                : 'Under SmartDose 1-to-1 pairing rules, you can connect one dedicated caregiver to help oversee your medication routine and receive alerts.',
+            'Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 14, color: secondaryTextColor, height: 1.45),
           ),
@@ -349,7 +340,7 @@ class _LinkedAccountScreenState extends State<LinkedAccountScreen> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    '1-to-1 Account Pairing Active',
+                    'Role-Based Pairing Active',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
@@ -380,17 +371,12 @@ class _LinkedAccountScreenState extends State<LinkedAccountScreen> {
               children: [
                 Row(
                   children: [
-                    CircleAvatar(
+                    AppAvatar(
+                      name: name,
+                      photoUrl: widget.isCaregiver
+                          ? (pairing['patientPhotoUrl'] ?? pairing['patientAvatar'] ?? pairing['patientProfileImage'])
+                          : (pairing['caregiverPhotoUrl'] ?? pairing['caregiverAvatar'] ?? pairing['caregiverProfileImage']),
                       radius: 32,
-                      backgroundColor: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                      child: Text(
-                        _getInitials(name),
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                          color: emerald,
-                        ),
-                      ),
                     ),
                     const SizedBox(width: 16),
                     Expanded(
@@ -532,7 +518,7 @@ class _LinkedAccountScreenState extends State<LinkedAccountScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Strict 1-to-1 Relationship',
+                  'Role-Based Patient & Caregiver Pairing',
                   style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -541,7 +527,7 @@ class _LinkedAccountScreenState extends State<LinkedAccountScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'SmartDose guarantees patient privacy by enforcing that one patient is linked with only one caregiver. Unlinking immediately revokes caregiver access while safeguarding medication schedules and device configuration.',
+                  'Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles. Unlinking immediately revokes caregiver access while safeguarding medication schedules and dispenser configuration.',
                   style: TextStyle(
                     fontSize: 12,
                     height: 1.4,

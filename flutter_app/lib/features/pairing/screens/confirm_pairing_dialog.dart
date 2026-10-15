@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/pairing_service.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 
 class ConfirmPairingDialog extends StatefulWidget {
   final Map<String, dynamic> patientData;
@@ -106,6 +107,9 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
     final patientEmail = widget.patientData['email'] ?? '';
     final age = widget.patientData['age'];
     final bool isAlreadyLinked = widget.patientData['isAlreadyLinked'] == true;
+    final photoUrl = widget.patientData['photoUrl'] ??
+        widget.patientData['avatarUrl'] ??
+        widget.patientData['profileImage'];
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
@@ -117,18 +121,10 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             // Patient Avatar
-            Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(
-                color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                shape: BoxShape.circle,
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                patientName.isNotEmpty ? patientName[0].toUpperCase() : 'P',
-                style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: emerald),
-              ),
+            AppAvatar(
+              name: patientName,
+              photoUrl: photoUrl,
+              radius: 36,
             ),
             const SizedBox(height: 16),
 
@@ -164,7 +160,7 @@ class _ConfirmPairingDialogState extends State<ConfirmPairingDialog> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        'This patient is already linked with another caregiver. The patient must unlink first before a new pairing can be requested.',
+                        'This patient already has an active caregiver paired. If you need to manage this patient, please ask them to unlink their existing caregiver first.',
                         style: TextStyle(
                           fontSize: 12,
                           color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),

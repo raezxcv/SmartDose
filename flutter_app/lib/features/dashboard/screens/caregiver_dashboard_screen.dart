@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'meds_tab.dart';
@@ -14,6 +16,7 @@ import '../../pairing/services/pairing_service.dart';
 import '../../pairing/screens/connect_patient_screen.dart';
 import '../../pairing/screens/linked_account_screen.dart';
 import '../../pairing/screens/emergency_contacts_screen.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 
 
 class CaregiverHomeScreen extends StatefulWidget {
@@ -126,10 +129,15 @@ class _CaregiverHomeScreenState extends State<CaregiverHomeScreen> {
     return 'CG';
   }
 
-  void _switchTab(int index) {
-    if (_currentIndex != index) {
-      setState(() => _currentIndex = index);
-    }
+  String _patientTabSection = 'schedule';
+
+  void _switchTab(int index, {String section = 'schedule'}) {
+    setState(() {
+      _currentIndex = index;
+      if (index == 1) {
+        _patientTabSection = section;
+      }
+    });
   }
 
   Future<void> _markAllNotificationsRead() async {
@@ -215,7 +223,8 @@ class _CaregiverHomeScreenState extends State<CaregiverHomeScreen> {
                 linkedPatient: _linkedPatient,
                 patientUid: _linkedPatientUid,
                 unreadCount: _unreadAlertsCount,
-                onGoToPatient: () => _switchTab(1),
+                onGoToPatient: () => _switchTab(1, section: 'schedule'),
+                onGoToInventory: () => _switchTab(1, section: 'inventory'),
                 onGoToHistory: () => _switchTab(2),
                 onGoToProfile: () => _switchTab(3),
                 onGoToAlerts: () => Navigator.push(
@@ -232,8 +241,10 @@ class _CaregiverHomeScreenState extends State<CaregiverHomeScreen> {
               // Tab 1: Patient Screen (Schedules & Inventory for linked patient)
               _linkedPatientUid != null
                   ? PatientMedsTab(
+                      key: ValueKey('$_linkedPatientUid-$_patientTabSection'),
                       isCaregiver: true,
                       patientUid: _linkedPatientUid,
+                      initialSection: _patientTabSection,
                     )
                   : _buildNoPatientView(theme, isDark),
 
@@ -383,6 +394,7 @@ class CaregiverHomeTab extends StatefulWidget {
   final String? patientUid;
   final int unreadCount;
   final VoidCallback onGoToPatient;
+  final VoidCallback onGoToInventory;
   final VoidCallback onGoToHistory;
   final VoidCallback onGoToProfile;
   final VoidCallback onGoToAlerts;
@@ -395,6 +407,7 @@ class CaregiverHomeTab extends StatefulWidget {
     required this.patientUid,
     required this.unreadCount,
     required this.onGoToPatient,
+    required this.onGoToInventory,
     required this.onGoToHistory,
     required this.onGoToProfile,
     required this.onGoToAlerts,
@@ -413,6 +426,189 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
 
   String? _deviceId;
   StreamSubscription? _userSub;
+
+  Future<void> _onCaregiverEmergencyDispense() async {
+    final uid = widget.patientUid;
+    if (uid == null) return;
+    final patientName = widget.linkedPatient?['patientName'] ?? 'your patient';
+
+    final theme = Theme.of(context);
+    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
+    final primaryTextColor = theme.colorScheme.onSurface;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        backgroundColor: cardBgColor,
+        contentPadding: const EdgeInsets.all(24),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.emergency_rounded, color: Color(0xFFEF4444), size: 28),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Emergency Dispense',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: primaryTextColor,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Trigger an immediate emergency medication dispense on $patientName\'s SmartDose dispenser? This will alert all emergency contacts and log the incident.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.4,
+                color: primaryTextColor.withValues(alpha: 0.65),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
+                    child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFDC2626),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
+                    child: const Text('Dispense', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final caregiverUid = FirebaseAuth.instance.currentUser?.uid;
+
+    try {
+      if (_deviceId != null) {
+        try {
+          await FirebaseFirestore.instance.collection('devices').doc(_deviceId).update({
+            'status': 'dispensing',
+            'emergencyDispense': true,
+            'emergencyRequestedAt': FieldValue.serverTimestamp(),
+            'emergencyRequestedBy': caregiverUid,
+          });
+        } catch (_) {}
+      }
+
+      // Hardware trigger via RTDB
+      try {
+        final url = Uri.parse(
+            'https://smart-pill-dispenser-baa02-default-rtdb.firebaseio.com/hardware/emergency_trigger.json');
+        await http.put(url, body: jsonEncode(true));
+      } catch (_) {}
+
+      // Queue SMS alerts to contacts
+      try {
+        final contactsSnap = await FirebaseFirestore.instance
+            .collection('contacts')
+            .where('patientUid', isEqualTo: uid)
+            .get();
+        for (final doc in contactsSnap.docs) {
+          final phone = doc.data()['phone'] as String? ?? '';
+          final name = doc.data()['name'] as String? ?? 'Contact';
+          if (phone.isNotEmpty) {
+            await FirebaseFirestore.instance.collection('sms_queue').add({
+              'patientUid': uid,
+              'patientName': patientName,
+              'to': phone,
+              'contactName': name,
+              'message': 'EMERGENCY ALERT: Caregiver ${widget.caregiverName} initiated emergency dispensing for $patientName. — SmartDose',
+              'status': 'pending',
+              'triggeredBy': 'caregiver_emergency',
+              'createdAt': FieldValue.serverTimestamp(),
+            });
+          }
+        }
+      } catch (_) {}
+
+      // Add emergency request record
+      await FirebaseFirestore.instance.collection('emergencyRequests').add({
+        'patientId': uid,
+        'patientUid': uid,
+        'initiatedBy': 'caregiver',
+        'caregiverUid': caregiverUid,
+        'caregiverName': widget.caregiverName,
+        'status': 'dispensed',
+        'requestedAt': FieldValue.serverTimestamp(),
+      });
+
+      // Add to dispensingLogs
+      await FirebaseFirestore.instance.collection('dispensingLogs').add({
+        'patientUid': uid,
+        'patientId': uid,
+        'deviceId': _deviceId ?? '',
+        'medicationName': 'Emergency Dose',
+        'type': 'emergency',
+        'status': 'dispensed',
+        'initiatedBy': 'caregiver',
+        'timestamp': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      // Patient in-app notification
+      await FirebaseFirestore.instance
+          .collection('notifications')
+          .doc(uid)
+          .collection('items')
+          .add({
+        'title': 'Emergency dose triggered by Caregiver',
+        'body': '${widget.caregiverName} initiated an emergency dispense on your SmartDose dispenser.',
+        'type': 'emergency',
+        'isRead': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Emergency dispensing signal transmitted to hardware dispenser!'),
+            backgroundColor: Color(0xFF00A36C),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error triggering emergency dispense: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -487,15 +683,7 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
     return 'Good evening';
   }
 
-  String _getInitials(String name) {
-    final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.length >= 2) {
-      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
-    } else if (parts.isNotEmpty && parts[0].isNotEmpty) {
-      return parts[0][0].toUpperCase();
-    }
-    return 'PT';
-  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -648,23 +836,10 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
             const SizedBox(width: 12),
             GestureDetector(
               onTap: widget.onGoToProfile,
-              child: Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: emerald.withValues(alpha: 0.4), width: 1.5),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  widget.caregiverInitials,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: emerald,
-                  ),
-                ),
+              child: AppAvatar(
+                name: widget.caregiverName,
+                size: 44,
+                showGradientBorder: true,
               ),
             ),
           ],
@@ -680,45 +855,43 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
     Color secondaryTextColor,
     Color emerald,
   ) {
-    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
-
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(26),
       decoration: BoxDecoration(
-        color: cardBgColor,
+        color: emerald,
         borderRadius: BorderRadius.circular(28),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.04),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
+            color: emerald.withValues(alpha: 0.32),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
       child: Column(
         children: [
           Container(
-            width: 72,
-            height: 72,
+            width: 68,
+            height: 68,
             decoration: BoxDecoration(
-              color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
+              color: Colors.white.withValues(alpha: 0.2),
               shape: BoxShape.circle,
             ),
-            child: Icon(LucideIcons.userPlus, color: emerald, size: 34),
+            child: const Icon(LucideIcons.scanLine, color: Colors.white, size: 32),
           ),
-          const SizedBox(height: 18),
-          Text(
+          const SizedBox(height: 16),
+          const Text(
             'No Patient Linked Yet',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryTextColor),
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
           ),
           const SizedBox(height: 8),
-          Text(
+          const Text(
             'Pair your caregiver account with your patient by scanning their account QR code. Once paired, you can view their medication adherence and dispenser connectivity.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 13, color: secondaryTextColor, height: 1.45),
+            style: TextStyle(fontSize: 13, color: Colors.white70, height: 1.45),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 22),
           SizedBox(
             width: double.infinity,
             height: 50,
@@ -729,15 +902,16 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
                   MaterialPageRoute(builder: (_) => const ConnectPatientScreen()),
                 );
               },
-              icon: const Icon(LucideIcons.scanLine, color: Colors.white, size: 18),
+              icon: const Icon(LucideIcons.scanLine, color: Color(0xFF00A36C), size: 18),
               label: const Text(
-                'Scan Patient QR Code',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                'Scan a Patient',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF00A36C)),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: emerald,
+                backgroundColor: Colors.white,
+                foregroundColor: emerald,
                 elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
               ),
             ),
           ),
@@ -770,7 +944,7 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  '1-to-1 Pairing Policy',
+                  'Caregiver & Patient Pairing',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
@@ -779,7 +953,7 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'SmartDose enforces a strict 1-to-1 relationship. Each caregiver monitors exactly one patient, ensuring focused care and patient data privacy.',
+                  'Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles.',
                   style: TextStyle(
                     fontSize: 12,
                     color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF047857),
@@ -803,7 +977,6 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
   ) {
     final patientName = widget.linkedPatient?['patientName'] ?? 'Linked Patient';
     final patientEmail = widget.linkedPatient?['patientEmail'] ?? '';
-    final cardBgColor = theme.cardTheme.color ?? theme.colorScheme.surface;
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: _deviceStream,
@@ -813,15 +986,15 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
         final String deviceId = _deviceId ?? (devData?['deviceId'] as String? ?? 'Not paired');
 
         return Container(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
-            color: cardBgColor,
+            color: emerald,
             borderRadius: BorderRadius.circular(28),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.04),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
+                color: emerald.withValues(alpha: 0.32),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
               ),
             ],
           ),
@@ -829,14 +1002,55 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                    child: Text(
-                      _getInitials(patientName),
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: emerald),
+                  const Text(
+                    'LINKED PATIENT',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.1,
                     ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: isOnline ? const Color(0xFF6EE7B7) : const Color(0xFFFCD34D),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          isOnline ? 'Online ($deviceId)' : 'Offline ($deviceId)',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  AppAvatar(
+                    name: patientName,
+                    size: 52,
+                    showGradientBorder: true,
                   ),
                   const SizedBox(width: 14),
                   Expanded(
@@ -845,44 +1059,27 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
                       children: [
                         Text(
                           patientName,
-                          style: TextStyle(
-                            fontSize: 18,
+                          style: const TextStyle(
+                            fontSize: 20,
                             fontWeight: FontWeight.bold,
-                            color: primaryTextColor,
+                            color: Colors.white,
                           ),
                         ),
                         if (patientEmail.isNotEmpty)
-                          Text(
-                            patientEmail,
-                            style: TextStyle(fontSize: 12, color: secondaryTextColor),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              patientEmail,
+                              style: const TextStyle(fontSize: 13, color: Colors.white70),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: isOnline ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              isOnline ? 'Dispenser $deviceId · Online' : 'Dispenser $deviceId · Offline',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                                color: isOnline ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
-                              ),
-                            ),
-                          ],
-                        ),
                       ],
                     ),
                   ),
                   IconButton(
-                    icon: Icon(LucideIcons.userCog, color: secondaryTextColor, size: 20),
+                    icon: const Icon(LucideIcons.userCog, color: Colors.white, size: 20),
                     tooltip: 'Manage Pairing',
                     onPressed: () {
                       Navigator.push(
@@ -893,47 +1090,31 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
                   ),
                 ],
               ),
-              const SizedBox(height: 16),
-              const Divider(height: 1),
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: widget.onGoToPatient,
-                      icon: const Icon(LucideIcons.calendarDays, size: 16),
-                      label: const Text('View Schedule', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: emerald,
-                        side: BorderSide(color: emerald.withValues(alpha: 0.5)),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      ),
-                    ),
+              const SizedBox(height: 20),
+              // Capsule button "Manage Patient"
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: emerald,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => CompartmentInventoryScreen(
-                              isCaregiver: true,
-                              patientUid: widget.patientUid,
-                            ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(LucideIcons.boxes, size: 16, color: Colors.white),
-                      label: const Text('Pill Inventory', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: emerald,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  onPressed: widget.onGoToPatient,
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Manage Patient',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                       ),
-                    ),
+                      SizedBox(width: 6),
+                      Icon(Icons.arrow_forward_rounded, size: 18),
+                    ],
                   ),
-                ],
+                ),
               ),
             ],
           ),
@@ -1403,26 +1584,31 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
       {
         'icon': LucideIcons.calendarDays,
         'label': 'Medication\nSchedule',
+        'color': emerald,
         'cb': widget.onGoToPatient,
       },
       {
         'icon': Icons.inventory_2_outlined,
         'label': 'Pill\nInventory',
-        'cb': () => Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (_) => CompartmentInventoryScreen(isCaregiver: true, patientUid: widget.patientUid),
-          ),
-        ),
+        'color': emerald,
+        'cb': widget.onGoToInventory,
+      },
+      {
+        'icon': Icons.emergency_rounded,
+        'label': 'Emergency\nDispense',
+        'color': const Color(0xFFEF4444),
+        'cb': _onCaregiverEmergencyDispense,
       },
       {
         'icon': LucideIcons.libraryBig,
         'label': 'Adherence\nHistory',
+        'color': emerald,
         'cb': widget.onGoToHistory,
       },
       {
         'icon': LucideIcons.usersRound,
         'label': 'Emergency\nContacts',
+        'color': emerald,
         'cb': () => Navigator.push(
           context,
           MaterialPageRoute(
@@ -1449,21 +1635,29 @@ class _CaregiverHomeTabState extends State<CaregiverHomeTab> {
                 onTap: a['cb'] as VoidCallback,
                 child: Column(
                   children: [
-                    Container(
-                      width: 58,
-                      height: 58,
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: emerald.withValues(alpha: isDark ? 0.2 : 0.12),
-                            blurRadius: 10,
-                            offset: const Offset(0, 3),
+                    Builder(
+                      builder: (context) {
+                        final color = a['color'] as Color? ?? emerald;
+                        final isRed = color == const Color(0xFFEF4444);
+                        return Container(
+                          width: 58,
+                          height: 58,
+                          decoration: BoxDecoration(
+                            color: isRed
+                                ? (isDark ? const Color(0xFF381212) : const Color(0xFFFEE2E2))
+                                : (isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0)),
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: color.withValues(alpha: isDark ? 0.2 : 0.12),
+                                blurRadius: 10,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      child: Icon(a['icon'] as IconData, color: emerald, size: 24),
+                          child: Icon(a['icon'] as IconData, color: color, size: 24),
+                        );
+                      },
                     ),
                     const SizedBox(height: 8),
                     Text(

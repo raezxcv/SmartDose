@@ -8,6 +8,7 @@ import '../services/pairing_service.dart';
 import 'connection_requests_screen.dart';
 import 'linked_account_screen.dart';
 import 'package:smartdose/shared/widgets/smartdose_loading.dart';
+import 'package:smartdose/shared/widgets/app_avatar.dart';
 
 class PairCaregiverScreen extends StatefulWidget {
   const PairCaregiverScreen({super.key});
@@ -25,35 +26,44 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
   PairingTokenModel? _currentToken;
   bool _isLoading = false;
   Timer? _timer;
-  int _secondsRemaining = 600;
+  final ValueNotifier<int> _secondsRemaining = ValueNotifier<int>(600);
+
+  Stream<List<Map<String, dynamic>>>? _caregiversStream;
+  Stream<List<Map<String, dynamic>>>? _pendingRequestsStream;
 
   @override
   void initState() {
     super.initState();
+    final uid = _uid;
+    if (uid != null && uid.isNotEmpty) {
+      _caregiversStream = _pairingService.getConnectedCaregiversStream(uid);
+      _pendingRequestsStream = _pairingService.getPendingRequestsStream(uid);
+    }
     _generateNewToken();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _secondsRemaining.dispose();
     super.dispose();
   }
 
   void _startTimer() {
     _timer?.cancel();
-    setState(() => _secondsRemaining = 600);
+    _secondsRemaining.value = 600;
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_secondsRemaining > 0) {
-        if (mounted) setState(() => _secondsRemaining--);
+      if (_secondsRemaining.value > 0) {
+        _secondsRemaining.value--;
       } else {
         timer.cancel();
       }
     });
   }
 
-  String get _formattedTimer {
-    final m = (_secondsRemaining / 60).floor().toString().padLeft(2, '0');
-    final s = (_secondsRemaining % 60).toString().padLeft(2, '0');
+  String _formatTimer(int seconds) {
+    final m = (seconds / 60).floor().toString().padLeft(2, '0');
+    final s = (seconds % 60).toString().padLeft(2, '0');
     return '$m:$s';
   }
 
@@ -82,6 +92,71 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
         );
       }
     }
+  }
+
+  void _saveQrCode() {
+    if (_currentToken == null) return;
+    Clipboard.setData(ClipboardData(text: _currentToken!.pairingCode));
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Row(
+          children: [
+            Icon(LucideIcons.checkCircle2, color: Color(0xFF00A36C)),
+            SizedBox(width: 10),
+            Text('QR Code Ready'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Your pairing QR code and code text have been prepared and copied to your clipboard.',
+              style: TextStyle(fontSize: 14, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F8F0),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    _currentToken!.pairingCode,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.5,
+                      color: Color(0xFF00A36C),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'You can share this code with your caregiver or display it anytime from this screen.',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00A36C),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            ),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -113,9 +188,7 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
         ),
         actions: [
           StreamBuilder<List<Map<String, dynamic>>>(
-            stream: currentUid != null
-                ? _pairingService.getPendingRequestsStream(currentUid)
-                : const Stream.empty(),
+            stream: _pendingRequestsStream ?? const Stream.empty(),
             builder: (context, snapshot) {
               final pendingCount = snapshot.data?.length ?? 0;
               return GestureDetector(
@@ -166,19 +239,17 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
       body: currentUid == null
           ? const Center(child: Text('Please sign in to manage account pairing.'))
           : StreamBuilder<List<Map<String, dynamic>>>(
-              stream: _pairingService.getConnectedCaregiversStream(currentUid),
+              stream: _caregiversStream,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (!snapshot.hasData && snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: SmartDoseLoading(size: 80));
                 }
 
                 final pairings = snapshot.data ?? [];
                 if (pairings.isNotEmpty) {
-                  // Patient already has an active linked caregiver -> enforce 1-to-1
                   return _buildAlreadyLinkedView(pairings.first, theme, isDark, cardBgColor, primaryTextColor, emerald);
                 }
 
-                // Patient is not linked -> display dedicated pairing QR code
                 return _buildPairingQrView(theme, isDark, cardBgColor, primaryTextColor, emerald);
               },
             ),
@@ -197,6 +268,7 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
     final caregiverName = active['caregiverName'] ?? 'Caregiver';
     final caregiverEmail = active['caregiverEmail'] ?? '';
     final role = active['role'] ?? 'Primary Caregiver';
+    final photoUrl = active['caregiverPhoto'] as String?;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
@@ -228,7 +300,7 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
                 ),
                 const SizedBox(height: 18),
                 Text(
-                  'Caregiver Already Linked',
+                  'Caregiver Connected',
                   style: TextStyle(
                     fontSize: 22,
                     fontWeight: FontWeight.bold,
@@ -238,7 +310,7 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Your account is currently linked with $caregiverName. SmartDose enforces a strict 1-to-1 relationship. You cannot generate a new pairing code while your account remains linked.',
+                  'Your account is currently linked with $caregiverName. Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: secondaryTextColor, height: 1.45),
                 ),
@@ -254,13 +326,10 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
                   ),
                   child: Row(
                     children: [
-                      CircleAvatar(
-                        radius: 24,
-                        backgroundColor: isDark ? const Color(0xFF1E2D25) : const Color(0xFFE8F8F0),
-                        child: Text(
-                          caregiverName.isNotEmpty ? caregiverName[0].toUpperCase() : 'C',
-                          style: TextStyle(fontWeight: FontWeight.bold, color: emerald, fontSize: 18),
-                        ),
+                      AppAvatar(
+                        name: caregiverName,
+                        photoUrl: photoUrl,
+                        size: 48,
                       ),
                       const SizedBox(width: 14),
                       Expanded(
@@ -391,33 +460,45 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
                       data: _currentToken!.qrPayload,
                       version: QrVersions.auto,
                       size: 180.0,
-                      foregroundColor: const Color(0xFF0F172A),
+                      dataModuleStyle: const QrDataModuleStyle(
+                        dataModuleShape: QrDataModuleShape.square,
+                        color: Color(0xFF0F172A),
+                      ),
+                      eyeStyle: const QrEyeStyle(
+                        eyeShape: QrEyeShape.square,
+                        color: Color(0xFF0F172A),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
 
-                  // Timer Badge
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF1E2D25) : Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(LucideIcons.timer, size: 14, color: emerald),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Expires in $_formattedTimer',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: emerald,
-                          ),
+                  // Timer Badge (uses ValueListenableBuilder to avoid rebuilding whole widget)
+                  ValueListenableBuilder<int>(
+                    valueListenable: _secondsRemaining,
+                    builder: (context, seconds, _) {
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1E2D25) : Colors.white,
+                          borderRadius: BorderRadius.circular(20),
                         ),
-                      ],
-                    ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(LucideIcons.timer, size: 14, color: emerald),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Expires in ${_formatTimer(seconds)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: emerald,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
 
                   const SizedBox(height: 20),
@@ -464,14 +545,40 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Regenerate Button
-                  TextButton.icon(
-                    onPressed: _generateNewToken,
-                    icon: Icon(LucideIcons.refreshCw, size: 16, color: emerald),
-                    label: Text(
-                      'Regenerate QR Code',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: emerald),
-                    ),
+                  // Action buttons: Save QR and Regenerate QR Code
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _saveQrCode,
+                        icon: const Icon(LucideIcons.download, size: 16, color: Colors.white),
+                        label: const Text(
+                          'Save QR',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: emerald,
+                          elevation: 0,
+                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      OutlinedButton.icon(
+                        onPressed: _generateNewToken,
+                        icon: Icon(LucideIcons.refreshCw, size: 16, color: emerald),
+                        label: Text(
+                          'Regenerate',
+                          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: emerald),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: emerald,
+                          side: BorderSide(color: emerald.withValues(alpha: 0.4)),
+                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ],
@@ -479,7 +586,7 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
           ),
           const SizedBox(height: 20),
 
-          // 1-to-1 Pairing Reminder
+          // Pairing Explanation Banner
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -495,7 +602,7 @@ class _PairCaregiverScreenState extends State<PairCaregiverScreen> {
                 const SizedBox(width: 12),
                 const Expanded(
                   child: Text(
-                    'SmartDose links one patient with one caregiver. Connecting automatically grants your caregiver access to your adherence logs and alerts.',
+                    'Pairing connects a patient and caregiver so they can access the appropriate medication information and features based on their roles.',
                     style: TextStyle(fontSize: 12, height: 1.35),
                   ),
                 ),

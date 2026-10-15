@@ -156,6 +156,20 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
     }
   }
 
+  bool get _isDeviceOnline {
+    final rawOnline = _deviceData?['isOnline'] as bool? ?? false;
+    final status = _deviceData?['status'] as String? ?? '';
+    final lastHeartbeat = _deviceData?['lastHeartbeat'] as Timestamp?;
+    bool isOnline = rawOnline || status == 'online' || status == 'ready';
+    if (lastHeartbeat != null) {
+      final diff = DateTime.now().difference(lastHeartbeat.toDate());
+      if (diff.inSeconds > 90) isOnline = false;
+    } else if (!rawOnline && status != 'online') {
+      isOnline = false;
+    }
+    return isOnline;
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>>? get _activityLogsStream {
     final uid = _uid;
     if (uid == null) return null;
@@ -173,7 +187,7 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
     if (_isFullscreen) return _buildFullscreenView();
 
     final streamUrl = _deviceData?['streamUrl'] as String?;
-    final isOnline = _deviceData?['isOnline'] as bool? ?? false;
+    final isOnline = _isDeviceOnline;
 
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -219,171 +233,200 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
       ),
       body: Column(
         children: [
-          // ─── VIDEO BLOCK (Tap to toggle overlays in minimized mode) ────────
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _toggleControls,
-            child: Container(
-              height: 250,
-              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              clipBehavior: Clip.antiAlias,
-              decoration: BoxDecoration(
-                color: isDark ? Colors.black : const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(
-                  color: isDark ? Colors.transparent : const Color(0xFFE2E8F0),
-                  width: 1.5,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.08),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Stack(
-                children: [
-                  // Live MJPEG stream — auto-connects, auto-retries, shows LIVE badge
-                  Positioned.fill(
-                    child: MjpegStreamView(
-                      key: ValueKey(_streamKey),
-                      streamUrl: streamUrl,
-                      isOnline: isOnline,
-                      fit: BoxFit.cover,
+          // ─── VIDEO BLOCK (16:9 Aspect Ratio) ────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _toggleControls,
+                child: Container(
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: isDark ? Colors.black : const Color(0xFFF8FAFC),
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(
+                      color: isDark ? Colors.transparent : const Color(0xFFE2E8F0),
+                      width: 1.5,
                     ),
-                  ),
-
-                  // Animated Overlay Controls (Fades in/out on tap & auto-hide)
-                  // Note: the pulsing LIVE badge is rendered by MjpegStreamView above,
-                  // so it stays visible even when controls are hidden.
-                  AnimatedOpacity(
-                    opacity: _showControls ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 250),
-                    child: IgnorePointer(
-                      ignoring: !_showControls,
-                      child: Stack(
-                        children: [
-
-                          // Top-right: Device status badge (Adaptive light/dark mode)
-                          Positioned(
-                            top: 14,
-                            right: 14,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: isDark
-                                    ? Colors.black.withValues(alpha: 0.60)
-                                    : Colors.white.withValues(alpha: 0.90),
-                                borderRadius: BorderRadius.circular(20),
-                                border: isDark
-                                    ? null
-                                    : Border.all(color: const Color(0xFFE2E8F0)),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.10),
-                                    blurRadius: 8,
-                                  ),
-                                ],
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    isOnline ? LucideIcons.wifi : LucideIcons.wifiOff,
-                                    color: isOnline ? const Color(0xFF00C882) : Colors.grey,
-                                    size: 13,
-                                  ),
-                                  const SizedBox(width: 5),
-                                  Text(
-                                    isOnline ? 'Raspberry Pi · Online' : 'Standby',
-                                    style: GoogleFonts.plusJakartaSans(
-                                      color: isDark ? Colors.white : const Color(0xFF0F172A),
-                                      fontSize: 11, fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-
-                          // Bottom-left: Take Photo button
-                          Positioned(
-                            bottom: 14,
-                            left: 14,
-                            child: GestureDetector(
-                              onTap: () {
-                                _resetControlsTimer();
-                                if (!_isCapturing) _requestCapture();
-                              },
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                                decoration: BoxDecoration(
-                                  color: _isCapturing
-                                      ? const Color(0xFF00A36C).withValues(alpha: 0.7)
-                                      : const Color(0xFF00A36C),
-                                  borderRadius: BorderRadius.circular(20),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: const Color(0xFF00A36C).withValues(alpha: 0.35),
-                                      blurRadius: 10,
-                                      offset: const Offset(0, 3),
-                                    ),
-                                  ],
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    _isCapturing
-                                        ? const SmartDoseLoading(size: 20)
-                                        : const Icon(LucideIcons.camera, size: 15, color: Colors.white),
-                                    const SizedBox(width: 7),
-                                    Text(
-                                      _isCapturing ? 'Capturing…' : 'Take Photo',
-                                      style: GoogleFonts.plusJakartaSans(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 12,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-
-                          // Bottom-right: Fullscreen button
-                          Positioned(
-                            bottom: 14,
-                            right: 14,
-                            child: GestureDetector(
-                              onTap: _enterFullscreen,
-                              child: Container(
-                                width: 44,
-                                height: 44,
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: Colors.black.withValues(alpha: 0.25),
-                                      blurRadius: 10,
-                                      offset: const Offset(0, 3),
-                                    ),
-                                  ],
-                                ),
-                                child: const Icon(
-                                  LucideIcons.maximize2,
-                                  color: Color(0xFF00A36C),
-                                  size: 20,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.08),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
                       ),
-                    ),
+                    ],
                   ),
-                ],
+                  child: Stack(
+                    children: [
+                      // Live MJPEG stream — auto-connects, auto-retries, shows LIVE badge
+                      Positioned.fill(
+                        child: MjpegStreamView(
+                          key: ValueKey(_streamKey),
+                          streamUrl: streamUrl,
+                          isOnline: isOnline,
+                          fit: BoxFit.cover,
+                          onRetry: () => setState(() => _streamKey++),
+                        ),
+                      ),
+
+                      // Animated Overlay Controls (Fades in/out on tap & auto-hide)
+                      AnimatedOpacity(
+                        opacity: _showControls ? 1.0 : 0.0,
+                        duration: const Duration(milliseconds: 250),
+                        child: IgnorePointer(
+                          ignoring: !_showControls,
+                          child: Stack(
+                            children: [
+
+                              // Top-right: Device status badge
+                              Positioned(
+                                top: 14,
+                                right: 14,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                  decoration: BoxDecoration(
+                                    color: isDark
+                                        ? Colors.black.withValues(alpha: 0.60)
+                                        : Colors.white.withValues(alpha: 0.90),
+                                    borderRadius: BorderRadius.circular(20),
+                                    border: isDark
+                                        ? null
+                                        : Border.all(color: const Color(0xFFE2E8F0)),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.10),
+                                        blurRadius: 8,
+                                      ),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                        isOnline ? LucideIcons.wifi : LucideIcons.wifiOff,
+                                        color: isOnline ? const Color(0xFF00C882) : Colors.grey,
+                                        size: 13,
+                                      ),
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        isOnline ? 'Raspberry Pi · Online' : 'Standby',
+                                        style: GoogleFonts.plusJakartaSans(
+                                          color: isDark ? Colors.white : const Color(0xFF0F172A),
+                                          fontSize: 11, fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+
+                              // Bottom-left: Take Photo button (disabled when offline)
+                              Positioned(
+                                bottom: 14,
+                                left: 14,
+                                child: GestureDetector(
+                                  onTap: () {
+                                    _resetControlsTimer();
+                                    if (!isOnline) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(
+                                            'Raspberry Pi camera is on standby or offline.',
+                                            style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+                                          ),
+                                          backgroundColor: Colors.grey.shade800,
+                                          behavior: SnackBarBehavior.floating,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                        ),
+                                      );
+                                      return;
+                                    }
+                                    if (!_isCapturing) _requestCapture();
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                                    decoration: BoxDecoration(
+                                      color: !isOnline
+                                          ? (isDark ? Colors.grey.shade800 : Colors.grey.shade400)
+                                          : _isCapturing
+                                              ? const Color(0xFF00A36C).withValues(alpha: 0.7)
+                                              : const Color(0xFF00A36C),
+                                      borderRadius: BorderRadius.circular(20),
+                                      boxShadow: isOnline
+                                          ? [
+                                              BoxShadow(
+                                                color: const Color(0xFF00A36C).withValues(alpha: 0.35),
+                                                blurRadius: 10,
+                                                offset: const Offset(0, 3),
+                                              ),
+                                            ]
+                                          : null,
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        _isCapturing
+                                            ? const SmartDoseLoading(size: 20)
+                                            : Icon(
+                                                LucideIcons.camera,
+                                                size: 15,
+                                                color: isOnline ? Colors.white : Colors.white70,
+                                              ),
+                                        const SizedBox(width: 7),
+                                        Text(
+                                          !isOnline
+                                              ? 'Camera Offline'
+                                              : _isCapturing
+                                                  ? 'Capturing…'
+                                                  : 'Take Photo',
+                                          style: GoogleFonts.plusJakartaSans(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12,
+                                            color: isOnline ? Colors.white : Colors.white70,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+
+                              // Bottom-right: Fullscreen button
+                              Positioned(
+                                bottom: 14,
+                                right: 14,
+                                child: GestureDetector(
+                                  onTap: _enterFullscreen,
+                                  child: Container(
+                                    width: 44,
+                                    height: 44,
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.25),
+                                          blurRadius: 10,
+                                          offset: const Offset(0, 3),
+                                        ),
+                                      ],
+                                    ),
+                                    child: const Icon(
+                                      LucideIcons.maximize2,
+                                      color: Color(0xFF00A36C),
+                                      size: 20,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
@@ -480,7 +523,7 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
   // ─── FULLSCREEN VIEW (Landscape) ───────────────────────────────────────────
   Widget _buildFullscreenView() {
     final streamUrl = _deviceData?['streamUrl'] as String?;
-    final isOnline = _deviceData?['isOnline'] as bool? ?? false;
+    final isOnline = _isDeviceOnline;
 
     return PopScope(
       canPop: false,
@@ -502,6 +545,7 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
                   streamUrl: streamUrl,
                   isOnline: isOnline,
                   fit: BoxFit.contain,
+                  onRetry: () => setState(() => _streamKey++),
                 ),
 
                 // Animated Overlay Controls in Landscape
@@ -547,21 +591,37 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
                           ),
                         ),
 
-                        // Bottom-left: Take Photo button
+                        // Bottom-left: Take Photo button (offline gated)
                         Positioned(
                           bottom: 24,
                           left: 20,
                           child: GestureDetector(
                             onTap: () {
                               _resetControlsTimer();
+                              if (!isOnline) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                      'Raspberry Pi camera is on standby or offline.',
+                                      style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600),
+                                    ),
+                                    backgroundColor: Colors.grey.shade800,
+                                    behavior: SnackBarBehavior.floating,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                  ),
+                                );
+                                return;
+                              }
                               if (!_isCapturing) _requestCapture();
                             },
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
                               decoration: BoxDecoration(
-                                color: _isCapturing
-                                    ? const Color(0xFF00A36C).withValues(alpha: 0.7)
-                                    : const Color(0xFF00A36C),
+                                color: !isOnline
+                                    ? Colors.grey.shade800
+                                    : _isCapturing
+                                        ? const Color(0xFF00A36C).withValues(alpha: 0.7)
+                                        : const Color(0xFF00A36C),
                                 borderRadius: BorderRadius.circular(24),
                                 boxShadow: [
                                   BoxShadow(
@@ -576,14 +636,22 @@ class _CameraFeedScreenState extends State<CameraFeedScreen> {
                                 children: [
                                   _isCapturing
                                       ? const SmartDoseLoading(size: 20)
-                                      : const Icon(LucideIcons.camera, size: 18, color: Colors.white),
+                                      : Icon(
+                                          LucideIcons.camera,
+                                          size: 18,
+                                          color: isOnline ? Colors.white : Colors.white70,
+                                        ),
                                   const SizedBox(width: 8),
                                   Text(
-                                    _isCapturing ? 'Capturing…' : 'Take Photo',
+                                    !isOnline
+                                        ? 'Camera Offline'
+                                        : _isCapturing
+                                            ? 'Capturing…'
+                                            : 'Take Photo',
                                     style: GoogleFonts.plusJakartaSans(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 13,
-                                      color: Colors.white,
+                                      color: isOnline ? Colors.white : Colors.white70,
                                     ),
                                   ),
                                 ],

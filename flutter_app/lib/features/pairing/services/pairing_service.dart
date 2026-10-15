@@ -234,19 +234,26 @@ class PairingService {
       throw Exception('Invalid QR code format. Not a recognized SmartDose device or patient pairing code.');
     }
 
-    // Query pairing_tokens collection
-    QuerySnapshot? query;
+    // Fast direct document lookup for tokenId, fallback to pairingCode query
+    DocumentSnapshot? tokenDoc;
     try {
-      if (tokenId != null) {
-        query = await _db.collection('pairing_tokens').where('tokenId', isEqualTo: tokenId).limit(1).get();
-      } else if (pairingCode != null) {
-        query = await _db.collection('pairing_tokens').where('pairingCode', isEqualTo: pairingCode).limit(1).get();
+      if (tokenId != null && tokenId.isNotEmpty) {
+        final directDoc = await _db.collection('pairing_tokens').doc(tokenId).get();
+        if (directDoc.exists) {
+          tokenDoc = directDoc;
+        }
+      }
+      if (tokenDoc == null && pairingCode != null && pairingCode.isNotEmpty) {
+        final query = await _db.collection('pairing_tokens').where('pairingCode', isEqualTo: pairingCode).limit(1).get();
+        if (query.docs.isNotEmpty) {
+          tokenDoc = query.docs.first;
+        }
       }
     } catch (e) {
-      debugPrint('Firestore query pairing token notice: $e');
+      debugPrint('Firestore pairing token lookup notice: $e');
     }
 
-    if (query == null || query.docs.isEmpty) {
+    if (tokenDoc == null || !tokenDoc.exists) {
       if (directQrPayload != null && directQrPayload['patientUid'] != null) {
         return {
           'type': 'pairing_token',
@@ -261,7 +268,7 @@ class PairingService {
       throw Exception('Pairing code or QR token not found. Please verify the code and try again.');
     }
 
-    final doc = query.docs.first;
+    final doc = tokenDoc;
     final data = doc.data() as Map<String, dynamic>;
 
     final bool isUsed = data['isUsed'] ?? false;
@@ -431,7 +438,7 @@ class PairingService {
     String? caregiverPhoto,
     String? tokenId,
   }) async {
-    // 1. Strict 1-to-1 check: ensure caregiver does not already have an active linked patient
+    // 1. Check if caregiver already has an active linked patient
     final cgPairings = await _db
         .collection('pairings')
         .where('caregiverUid', isEqualTo: caregiverUid)
@@ -439,10 +446,10 @@ class PairingService {
         .get();
     if (cgPairings.docs.isNotEmpty) {
       throw Exception(
-          'You are already linked to a patient. SmartDose enforces a strict 1-to-1 relationship. Please unlink your current patient before connecting with another.');
+          'You are already linked to a patient. Pairing connects a patient and caregiver based on their assigned roles. Please unlink your current patient before connecting with another.');
     }
 
-    // 2. Strict 1-to-1 check: ensure patient does not already have an active linked caregiver
+    // 2. Check if patient already has an active linked caregiver
     final ptPairings = await _db
         .collection('pairings')
         .where('patientUid', isEqualTo: patientUid)
@@ -450,7 +457,7 @@ class PairingService {
         .get();
     if (ptPairings.docs.isNotEmpty) {
       throw Exception(
-          'This patient is already linked with another caregiver. Under SmartDose rules, only one caregiver can be linked at a time.');
+          'This patient is already linked with a caregiver. Pairing connects a patient and caregiver based on their assigned roles.');
     }
 
     // 3. Check if pending request already exists
@@ -477,6 +484,23 @@ class PairingService {
       'status': 'pending',
       'requestedAt': FieldValue.serverTimestamp(),
     });
+
+    // Add pairing request to the patient's main notification system
+    try {
+      await _db
+          .collection('notifications')
+          .doc(patientUid)
+          .collection('items')
+          .add({
+        'title': 'New Pairing Request',
+        'body': '$caregiverName sent you a pairing request ($relationship).',
+        'type': 'pairing_request',
+        'isRead': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint('Error sending pairing notification: $e');
+    }
   }
 
   /// Stream incoming pending caregiver requests for a patient
@@ -496,9 +520,10 @@ class PairingService {
     });
   }
 
-  /// Patient approves a caregiver request, enforcing strict 1-to-1 pairing
+  /// Patient approves a caregiver request
   Future<void> approvePairingRequest(String requestId, Map<String, dynamic> requestData) async {
     final patientUid = requestData['patientUid']?.toString() ?? '';
+    final patientName = requestData['patientName'] ?? 'Patient';
     final caregiverUid = requestData['caregiverUid']?.toString() ?? '';
     final caregiverName = requestData['caregiverName'] ?? 'Caregiver';
     final caregiverEmail = requestData['caregiverEmail'] ?? '';
@@ -513,7 +538,7 @@ class PairingService {
           .get();
       if (existingPt.docs.isNotEmpty) {
         throw Exception(
-            'You are already paired with a caregiver. Unlink the existing caregiver first before accepting a new request.');
+            'You are already paired with a caregiver. Please unlink the existing caregiver first before accepting a new request.');
       }
     }
 
@@ -537,7 +562,7 @@ class PairingService {
     // 1. Add to active pairings collection
     final pairingDocRef = await _db.collection('pairings').add({
       'patientUid': patientUid,
-      'patientName': requestData['patientName'] ?? 'Patient',
+      'patientName': patientName,
       'caregiverUid': caregiverUid,
       'caregiverName': caregiverName,
       'caregiverEmail': caregiverEmail,
@@ -572,12 +597,11 @@ class PairingService {
 
         await _db.collection('users').doc(caregiverUid).set({
           'linkedPatientUid': patientUid,
-          'linkedPatientName': requestData['patientName'] ?? 'Patient',
+          'linkedPatientName': patientName,
           'pairingId': pairingDocRef.id,
           'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
 
-        // Strict 1-to-1: overwrite caregiverIds with single caregiver
         await _db.collection('patients').doc(patientUid).set({
           'caregiverIds': [caregiverUid],
           'primaryCaregiverUid': caregiverUid,
@@ -589,7 +613,7 @@ class PairingService {
       try {
         await _db.collection('contacts').add({
           'patientUid': patientUid,
-          'patientName': requestData['patientName'] ?? 'Patient',
+          'patientName': patientName,
           'name': caregiverName,
           'phone': caregiverEmail,
           'email': caregiverEmail,
@@ -599,15 +623,46 @@ class PairingService {
           'createdAt': FieldValue.serverTimestamp(),
         });
       } catch (_) {}
+
+      // 5. Notify caregiver in their notifications system
+      try {
+        await _db
+            .collection('notifications')
+            .doc(caregiverUid)
+            .collection('items')
+            .add({
+          'title': 'Pairing Request Accepted',
+          'body': '$patientName accepted your pairing request. You can now monitor medication and adherence.',
+          'type': 'pairing_update',
+          'isRead': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
     }
   }
 
   /// Patient rejects a caregiver request
-  Future<void> rejectPairingRequest(String requestId) async {
+  Future<void> rejectPairingRequest(String requestId, {String? caregiverUid, String? patientName}) async {
     await _db.collection('pairing_requests').doc(requestId).update({
       'status': 'rejected',
       'rejectedAt': FieldValue.serverTimestamp(),
     });
+
+    if (caregiverUid != null && caregiverUid.isNotEmpty) {
+      try {
+        await _db
+            .collection('notifications')
+            .doc(caregiverUid)
+            .collection('items')
+            .add({
+          'title': 'Pairing Request Declined',
+          'body': '${patientName ?? 'The patient'} declined the pairing request.',
+          'type': 'pairing_update',
+          'isRead': false,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
+    }
   }
 
   /// Stream of active connected caregivers for a patient (strictly scoped by patientUid)
@@ -682,7 +737,7 @@ class PairingService {
     return null;
   }
 
-  /// Unlink a 1-to-1 relationship, revoking former caregiver access while preserving patient records
+  /// Unlink a pairing relationship, revoking former caregiver access while preserving patient records
   Future<void> unlinkPairing({
     required String pairingId,
     required String patientUid,
